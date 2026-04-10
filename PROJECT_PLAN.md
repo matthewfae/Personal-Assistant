@@ -11,6 +11,7 @@ Python Telegram bot that routes user messages through the Claude API with access
 - **DB access:** Curated tool functions only (`add_fact`, `search_facts`, etc.), not raw SQL. Safer, clearer, easier for Claude to use well.
 - **Mutation audit log:** All DB writes logged from day one. Gives us an audit trail and undo capability.
 - **Schema philosophy:** Start simple, grow organically. SQLite handles evolution fine if we're disciplined.
+- **Error handling:** All errors should surface as Telegram messages to the user, not silent failures or log-only output. Low-level code raises naturally; bot/agent layer catches and communicates back via Telegram.
 
 ## Development Stages
 
@@ -27,7 +28,9 @@ Python Telegram bot that routes user messages through the Claude API with access
 - Define 1–2 toy tools (e.g., `get_current_time`) to validate the loop end-to-end.
 - Confirm multi-turn flow: user message → Claude → tool_use → execute → tool_result → Claude → final response.
 - Add prompt caching on system prompt and tool definitions.
+- **Prompt management:** System prompt lives in a template file (`prompts/system.md`), with dynamic context (current time, etc.) injected at runtime via a `PromptBuilder`.
 - **Design discipline:** write tool functions as clean, stateless, JSON-serializable Python so they can become MCP tools later without redesign.
+- **Error strategy:** Low-level modules don't catch errors; bot/agent layer catches exceptions and sends user-friendly messages via Telegram.
 
 ### Stage 3: SQLite Database
 - Start with a minimal schema: `facts` table (category/key/value), `notes` table with FTS for search, `mutation_log` table for audit.
