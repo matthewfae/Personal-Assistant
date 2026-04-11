@@ -6,18 +6,79 @@ bot/agent.py              Agent loop (run_loop function)
 bot/main.py               Test harness that sends scripted messages through the loop
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
 bot/prompt_builder.py     Loads prompts/system.md and injects dynamic context
-tools/server.py           MCP server exposing tools over stdio
-db/                       Empty
-tests/                    Empty
+tools/server.py           MCP server: tool schemas, routing, result formatting
+db/connection.py          Connection management, schema DDL, init_db()
+db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
+db/facts.py               CRUD for the facts table
+db/notes.py               CRUD and FTS search for the notes table
 prompts/system.md         System prompt template with {current_time} placeholder
 ```
 
 ## Architecture
 
-Tools are defined in `tools/server.py`, an MCP server that runs as a subprocess
-communicating over stdio. The bot is an MCP client that spawns this server on startup.
+### Layers
 
-## Flow
+```
+MCP / Claude
+    │
+tools/server.py       ← MCP boundary: tool schemas, dispatch, string formatting
+    │
+db/facts.py           ← Data access: returns plain dicts, no MCP types
+db/notes.py
+    │
+db/connection.py      ← Connection management, schema DDL
+db/mutation_log.py    ← Audit writer (called within the same transaction as each write)
+    │
+SQLite
+```
+
+**Rule:** each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tools/server.py` has no SQL.
+
+### MCP Server (`tools/server.py`)
+
+Owns:
+- Tool schemas (what Claude sees: names, descriptions, input shapes)
+- `_dispatch()` — routes tool calls to the DB layer and formats results as strings
+
+Calls `init_db()` at startup so the schema is always ready before any tool is dispatched.
+
+### DB Layer (`db/`)
+
+**`connection.py`**
+- `get_db()` — context manager yielding a `sqlite3.Connection` with WAL mode and foreign keys enabled. Commits on clean exit, rolls back on exception.
+- `init_db()` — runs the schema DDL (tables + FTS triggers). Safe to call on every startup (all statements use `CREATE ... IF NOT EXISTS`).
+- Full schema DDL lives here as the single source of truth.
+
+**`mutation_log.py`**
+- `log(conn, table_name, operation, record_id, data)` — inserts one row into `mutation_log`. Takes an open connection so the log entry shares the same transaction as the mutation it records.
+
+**`facts.py`** — CRUD for the `facts` table
+- `add_fact(key, value, category)` → dict with `operation: 'inserted' | 'updated'`
+- `get_fact(key, category)` → dict or None
+- `search_facts(query, category?)` → list of dicts (key/value LIKE match)
+- `list_facts(category?, limit)` → list of dicts, newest first
+
+**`notes.py`** — CRUD and FTS for the `notes` table
+- `add_note(title, body, tags)` → dict
+- `get_note(note_id)` → dict or None
+- `search_notes(query, limit)` → list of dicts (FTS5, ranked by relevance)
+- `list_notes(limit)` → list of dicts (title + tags only, newest first)
+
+## Schema
+
+```sql
+facts (id, category, key, value, created_at, updated_at)
+    UNIQUE(category, key)
+
+notes (id, title, body, tags, created_at, updated_at)
+notes_fts  -- FTS5 virtual table; synced via INSERT/UPDATE/DELETE triggers
+
+mutation_log (id, table_name, operation, record_id, data_json, timestamp)
+```
+
+Timestamps are ISO-8601 UTC strings. Tags on notes are a plain comma-separated string.
+
+## Agent Flow
 
 `main.py` opens an `mcp_client()` context, then sends test messages through `run_loop`.
 
@@ -38,18 +99,9 @@ communicating over stdio. The bot is an MCP client that spawns this server on st
 - Adds `cache_control: ephemeral` to the last tool
 - Yields an `MCPClient` instance with `.tools` and `.call_tool(name, arguments)`
 
-## MCP Server (`tools/server.py`)
-
-Registers two handlers via the raw MCP SDK:
-- `@server.list_tools()` — returns the list of available tools
-- `@server.call_tool()` — dispatches tool calls by name
-
-Currently exposes one tool:
-- `add_fact(key, value, category)` — placeholder; returns a confirmation string
-
 ## State
 
-Conversation history is an in-memory list passed through `run_loop`. No persistence.
+Conversation history is an in-memory list passed through `run_loop`. No persistence yet.
 
 ## System Prompt
 
@@ -60,7 +112,8 @@ via `.format()` on each `build()` call. The system prompt block is marked
 ## Config
 
 `.env.example` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` is currently consumed.
+`TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` and `DB_PATH`
+are currently consumed.
 
 ## Model
 
