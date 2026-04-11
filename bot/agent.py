@@ -3,10 +3,10 @@ Agent loop: handles multi-turn conversation with Claude API and tool use.
 Implements prompt caching for cost reduction on repeated context.
 """
 
-import json
 from typing import Any, Callable
 from datetime import datetime
 from anthropic import Anthropic
+from prompt_builder import PromptBuilder
 
 # Define toy tools
 TOOLS = [
@@ -43,11 +43,6 @@ TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT = """You are a helpful personal assistant. You have access to tools to store and retrieve information.
-When the user asks you to remember something, use the add_fact tool.
-Be concise and helpful in your responses."""
-
-
 def get_current_time() -> str:
     """Get current date and time."""
     return datetime.now().isoformat()
@@ -71,6 +66,7 @@ class Agent:
     def __init__(self, api_key: str):
         self.client = Anthropic(api_key=api_key)
         self.conversation_history: list[dict[str, Any]] = []
+        self._prompt_builder = PromptBuilder()
 
     def process_tool_call(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool call and return the result."""
@@ -100,7 +96,7 @@ class Agent:
                 system=[
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT,
+                        "text": self._prompt_builder.build(),
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
