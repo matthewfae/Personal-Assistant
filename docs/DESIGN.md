@@ -1,3 +1,5 @@
+> **Status note.** This document describes the *current implementation* of the bot as it stands after Stage 2 and the exploratory DB + tool-surface work (see `PROJECT_PLAN.md` → Stage 2.5). An events-driven rebuild is in progress under `PROJECT_PLAN.md` → Stage 3 which will supersede much of what's below — particularly the tool surface, conversation history, and agent flow sections. Sections of this doc will be updated as the rebuild lands; until then, treat this as an accurate description of what exists *today*, not of where we're headed. For target architecture and decisions, see `PROJECT_PLAN.md`.
+
 # Current State
 
 ## Layout
@@ -60,7 +62,7 @@ Calls `init_db()` at startup so the schema is always ready before any tool is di
 
 **`notes.py`** — CRUD and FTS for the `notes` table
 - `add_note(title, body, tags)` → dict
-- `get_note(note_id)` → dict or None
+- `get_note(note_id)` → dict or None *(exists at the DB layer but is not currently exposed as an MCP tool)*
 - `search_notes(query, limit)` → list of dicts (FTS5, ranked by relevance)
 - `list_notes(limit)` → list of dicts (title + tags only, newest first)
 
