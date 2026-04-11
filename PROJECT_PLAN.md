@@ -95,7 +95,11 @@ First-pass SQLite integration that proved the end-to-end pipeline from Claude th
 - Eight tools: `add_fact`, `get_fact`, `search_facts`, `list_facts`, `add_note`, `get_note`, `search_notes`, `list_notes`.
 - Conversation history held as an in-memory list passed through `run_loop`.
 
-**Superseded by Stage 3.** The DB code, schema, and `mutation_log` from this stage are retained. The eight-tool surface is not: it will be stripped back and rebuilt on the events foundation.
+**Superseded by Stage 3.** Retained from this stage: the `facts` table, `mutation_log`, the `db/` layering pattern, and `add_fact`. Not retained:
+
+- `notes` / `notes_fts` and `db/notes.py` — removed as Stage 3 groundwork. If note-taking returns, it will be rebuilt on the events foundation rather than carried forward from this exploratory schema.
+- The other tools on the MCP surface (`get_fact`, `search_facts`, `list_facts`, and the three notes tools) — to be stripped in Stage 3d.
+- The in-memory conversation history — replaced by the events projection in Stage 3c.
 
 ### Stage 3: Events-Driven Rebuild (current focus)
 
@@ -103,7 +107,7 @@ Re-ground the architecture on the events table and a minimal tool surface. No ne
 
 **3a. Events schema.** Create the `events` table with `id`, `timestamp`, `turn_id`, `conversation_id`, `type`, `parent_event_id`, `payload` (JSON). Add indexes for `(conversation_id, timestamp)`, `type`, and `parent_event_id`. Add `BEFORE UPDATE` and `BEFORE DELETE` triggers that raise to enforce append-only. Define and document the initial event type taxonomy (`user_message`, `api_call`, `tool_call`, `tool_result`, `assistant_message`, plus post-turn cleanup types as they arise) and the payload shape for each at `v: 1`.
 
-**3b. Turn lifecycle.** Implement `turn_id` and `conversation_id` generation. Thread them through the agent loop so every event emitted during a turn carries them correctly. Decide the simplest viable `conversation_id` policy (likely: one conversation per run, or time-bucketed).
+**3b. Turn lifecycle.** Implement `turn_id` and `conversation_id` generation. Thread them through the agent loop so every event emitted during a turn carries them correctly. Initial `conversation_id` policy: **one conversation per process start** — simplest viable choice, no clock logic. Revisit when Stage 5 (Telegram) lands and the transport gives "session" a clearer meaning.
 
 **3c. Messages-as-projection.** Replace the in-memory history list with a function that queries the events table and builds the `messages` array for the next Claude call. Start with the simplest possible projection: chronological, current conversation, all message-like event types. This is the point where Stage 2b's former "context management" goal lives — it becomes "improve the projection policy" rather than a separate subsystem.
 

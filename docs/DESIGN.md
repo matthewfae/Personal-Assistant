@@ -12,7 +12,6 @@ tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
 db/facts.py               CRUD for the facts table
-db/notes.py               CRUD and FTS search for the notes table
 prompts/system.md         System prompt template with {current_time} placeholder
 ```
 
@@ -26,7 +25,6 @@ MCP / Claude
 tools/server.py       ← MCP boundary: tool schemas, dispatch, string formatting
     │
 db/facts.py           ← Data access: returns plain dicts, no MCP types
-db/notes.py
     │
 db/connection.py      ← Connection management, schema DDL
 db/mutation_log.py    ← Audit writer (called within the same transaction as each write)
@@ -60,25 +58,16 @@ Calls `init_db()` at startup so the schema is always ready before any tool is di
 - `search_facts(query, category?)` → list of dicts (key/value LIKE match)
 - `list_facts(category?, limit)` → list of dicts, newest first
 
-**`notes.py`** — CRUD and FTS for the `notes` table
-- `add_note(title, body, tags)` → dict
-- `get_note(note_id)` → dict or None *(exists at the DB layer but is not currently exposed as an MCP tool)*
-- `search_notes(query, limit)` → list of dicts (FTS5, ranked by relevance)
-- `list_notes(limit)` → list of dicts (title + tags only, newest first)
-
 ## Schema
 
 ```sql
 facts (id, category, key, value, created_at, updated_at)
     UNIQUE(category, key)
 
-notes (id, title, body, tags, created_at, updated_at)
-notes_fts  -- FTS5 virtual table; synced via INSERT/UPDATE/DELETE triggers
-
 mutation_log (id, table_name, operation, record_id, data_json, timestamp)
 ```
 
-Timestamps are ISO-8601 UTC strings. Tags on notes are a plain comma-separated string.
+Timestamps are ISO-8601 UTC strings.
 
 ## Agent Flow
 
