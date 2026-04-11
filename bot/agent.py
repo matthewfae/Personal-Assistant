@@ -3,22 +3,13 @@ Agent loop: handles multi-turn conversation with Claude API and tool use.
 Implements prompt caching for cost reduction on repeated context.
 """
 
-from typing import Any, Callable
-from datetime import datetime
+from typing import Any
 from anthropic import Anthropic
 from prompt_builder import PromptBuilder
 
-# Define toy tools
+_prompt_builder = PromptBuilder()
+
 TOOLS = [
-    {
-        "name": "get_current_time",
-        "description": "Get the current date and time",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
     {
         "name": "add_fact",
         "description": "Add a fact to the knowledge base",
@@ -40,12 +31,9 @@ TOOLS = [
             },
             "required": ["key", "value"],
         },
+        "cache_control": {"type": "ephemeral"},
     },
 ]
-
-def get_current_time() -> str:
-    """Get current date and time."""
-    return datetime.now().isoformat()
 
 
 def add_fact(key: str, value: str, category: str = "general") -> str:
@@ -53,104 +41,70 @@ def add_fact(key: str, value: str, category: str = "general") -> str:
     return f"Stored fact: {key}={value} (category: {category})"
 
 
-# Map tool names to functions
-TOOL_FUNCTIONS: dict[str, Callable] = {
-    "get_current_time": get_current_time,
+_TOOL_FUNCTIONS = {
     "add_fact": add_fact,
 }
 
 
-class Agent:
-    """Agent loop with Claude API and tool use, using prompt caching."""
+def _execute_tool(tool_name: str, tool_input: dict) -> str:
+    if tool_name not in _TOOL_FUNCTIONS:
+        return f"Error: Unknown tool '{tool_name}'"
+    try:
+        return str(_TOOL_FUNCTIONS[tool_name](**tool_input))
+    except TypeError as e:
+        return f"Error calling {tool_name}: {e}"
 
-    def __init__(self, api_key: str):
-        self.client = Anthropic(api_key=api_key)
-        self.conversation_history: list[dict[str, Any]] = []
-        self._prompt_builder = PromptBuilder()
 
-    def process_tool_call(self, tool_name: str, tool_input: dict) -> str:
-        """Execute a tool call and return the result."""
-        if tool_name not in TOOL_FUNCTIONS:
-            return f"Error: Unknown tool '{tool_name}'"
+def run_loop(
+    client: Anthropic,
+    messages: list[dict[str, Any]],
+    user_message: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    Run the agent loop for one user turn.
 
-        try:
-            func = TOOL_FUNCTIONS[tool_name]
-            result = func(**tool_input)
-            return str(result)
-        except TypeError as e:
-            return f"Error calling {tool_name}: {e}"
+    Takes the existing message history and a new user message, runs until
+    Claude produces a final text response, and returns that response along
+    with the updated message history.
+    """
+    messages = list(messages)
+    messages.append({"role": "user", "content": user_message})
 
-    def run(self, user_message: str) -> str:
-        """
-        Run the agent loop: send message to Claude, handle tool calls, return final response.
-        """
-        # Add user message to history
-        self.conversation_history.append({"role": "user", "content": user_message})
+    while True:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=8192,
+            system=[
+                {
+                    "type": "text",
+                    "text": _prompt_builder.build(),
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            tools=TOOLS,
+            messages=messages,
+        )
 
-        # Agentic loop
-        while True:
-            # Call Claude with prompt caching enabled
-            response = self.client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
-                system=[
-                    {
-                        "type": "text",
-                        "text": self._prompt_builder.build(),
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                tools=TOOLS,
-                messages=self.conversation_history,
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            final_text = next(
+                (block.text for block in response.content if block.type == "text"),
+                "",
             )
+            return final_text, messages
 
-            # Check stop reason
-            if response.stop_reason == "end_turn":
-                # Claude finished without tool calls - extract final response
-                final_response = ""
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        final_response = block.text
-                        break
+        elif response.stop_reason == "tool_use":
+            tool_results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": _execute_tool(block.name, block.input),
+                }
+                for block in response.content
+                if block.type == "tool_use"
+            ]
+            messages.append({"role": "user", "content": tool_results})
 
-                # Add assistant response to history
-                self.conversation_history.append(
-                    {"role": "assistant", "content": response.content}
-                )
-
-                return final_response
-
-            elif response.stop_reason == "tool_use":
-                # Claude wants to use a tool
-                # Add assistant's response (with tool_use blocks) to history
-                self.conversation_history.append(
-                    {"role": "assistant", "content": response.content}
-                )
-
-                # Process all tool calls in the response
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_result = self.process_tool_call(
-                            block.name, block.input
-                        )
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": tool_result,
-                            }
-                        )
-
-                # Add tool results to history
-                self.conversation_history.append(
-                    {"role": "user", "content": tool_results}
-                )
-
-            else:
-                # Unexpected stop reason
-                return f"Unexpected stop reason: {response.stop_reason}"
-
-    def reset(self):
-        """Clear conversation history for a fresh start."""
-        self.conversation_history = []
+        else:
+            return f"Unexpected stop reason: {response.stop_reason}", messages

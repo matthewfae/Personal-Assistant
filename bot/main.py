@@ -3,8 +3,9 @@ Main entry point for testing the agent loop.
 """
 
 import os
+from anthropic import Anthropic
 from dotenv import load_dotenv
-from agent import Agent
+from agent import run_loop
 
 load_dotenv()
 
@@ -15,18 +16,17 @@ def main():
         print("Error: ANTHROPIC_API_KEY not set in .env file")
         return
 
-    agent = Agent(api_key)
+    client = Anthropic(api_key=api_key)
+    messages = []
 
-    # Test messages
     test_messages = [
-        "What time is it right now?",
         "Please remember that I like coffee.",
         "What's 2 + 2?",
     ]
 
     for message in test_messages:
         print(f"\nUser: {message}")
-        response = agent.run(message)
+        response, messages = run_loop(client, messages, message)
         print(f"Assistant: {response}")
         print("-" * 60)
 
