@@ -32,6 +32,13 @@ Python Telegram bot that routes user messages through the Claude API with access
 - **Design discipline:** write tool functions as clean, stateless, JSON-serializable Python so they can become MCP tools later without redesign.
 - **Error strategy:** Low-level modules don't catch errors; bot/agent layer catches exceptions and sends user-friendly messages via Telegram.
 
+- ### Stage 2b: Context Management & Short-Term Memory
+- Append-only `events` table logs every agent loop event (user messages, API calls, tool use, tool results, assistant responses). Permanent record — never truncated.
+- `message_context` table holds an ordered set of recent entries injected into each turn's prompt. This is the "working memory."
+- After each assistant response, a lightweight curation API call (no tools, no system prompt, minimal tokens) asks Claude which context entries are still relevant. Returns a JSON array of indices to keep.
+- **Why model-driven over fixed window:** Avoids accidentally dropping mid-conversation context while keeping stale context cheap to discard. The full event log means curation is cold-storage demotion, not deletion.
+- Existing tools (e.g., `search_facts`) can query the events table to recover anything curated out of active context.
+
 ### Stage 3: SQLite Database
 - Start with a minimal schema: `facts` table (category/key/value), `notes` table with FTS for search, `mutation_log` table for audit.
 - Add more structured tables (projects, tasks, calendar events) as real needs emerge.
