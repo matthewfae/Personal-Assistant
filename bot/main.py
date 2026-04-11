@@ -2,15 +2,19 @@
 Main entry point for testing the agent loop.
 """
 
+import asyncio
 import os
+
 from anthropic import Anthropic
 from dotenv import load_dotenv
+
 from agent import run_loop
+from mcp_client import mcp_client
 
 load_dotenv()
 
 
-def main():
+async def main():
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         print("Error: ANTHROPIC_API_KEY not set in .env file")
@@ -24,12 +28,13 @@ def main():
         "What's 2 + 2?",
     ]
 
-    for message in test_messages:
-        print(f"\nUser: {message}")
-        response, messages = run_loop(client, messages, message)
-        print(f"Assistant: {response}")
-        print("-" * 60)
+    async with mcp_client() as mcp:
+        for message in test_messages:
+            print(f"\nUser: {message}")
+            response, messages = await run_loop(client, mcp, messages, message)
+            print(f"Assistant: {response}")
+            print("-" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

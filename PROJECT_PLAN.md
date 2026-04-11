@@ -5,76 +5,62 @@ Python Telegram bot that routes user messages through the Claude API with access
 
 ## Core Architecture Decisions
 
-- **Model:** Haiku 4.5 as primary. Escalate to Sonnet later only if needed.
-- **Cost strategy:** Aggressive prompt caching on system prompt, tool definitions, and stable context. Expect ~80–90% cost reduction on repeated context.
-- **Tool architecture:** Phased approach — start with native Claude API tool use, then refactor into an MCP server/client split as a learning exercise (see Stages 2 and 5.5).
-- **DB access:** Curated tool functions only (`add_fact`, `search_facts`, etc.), not raw SQL. Safer, clearer, easier for Claude to use well.
-- **Mutation audit log:** All DB writes logged from day one. Gives us an audit trail and undo capability.
-- **Schema philosophy:** Start simple, grow organically. SQLite handles evolution fine if we're disciplined.
-- **Error handling:** All errors should surface as Telegram messages to the user, not silent failures or log-only output. Low-level code raises naturally; bot/agent layer catches and communicates back via Telegram.
+- **Model:** `claude-haiku-4-5-20251001` as primary.
+- **Prompt caching:** Applied to system prompt and tool list.
+- **Tool architecture:** MCP server/client split. Tools live in `tools/server.py`; the bot is an MCP client.
+- **DB access:** Curated tool functions only (`add_fact`, `search_facts`, etc.), not raw SQL.
+- **Mutation audit log:** All DB writes logged to a `mutation_log` table.
+- **Schema:** Minimal to start; tables added as needed.
+- **Error handling:** Low-level code raises naturally; bot/agent layer catches and forwards errors to the user via Telegram.
 
 ## Development Stages
 
-### Stage 1: Python Stack & Environment
-- Python 3.11+
-- `uv` for package management (faster and simpler than pip/poetry)
-- Core packages: `anthropic`, `python-telegram-bot`, `python-dotenv`, `mcp` (later)
-- `sqlite3` from stdlib (no ORM)
-- `.env` file for API keys and secrets (never hardcode)
+### Stage 1: Python Stack & Environment ✓
+- Python 3.11+, `uv` for package management
+- Core packages: `anthropic`, `python-telegram-bot`, `python-dotenv`, `mcp`
+- `sqlite3` from stdlib
+- `.env` for secrets
 - Project structure: `bot/`, `tools/`, `db/`, `tests/`
 
-### Stage 2: Agent Loop with Native Tool Use
-- Build the tool-use loop from the start — this is the core architecture.
-- Define 1–2 toy tools (e.g., `get_current_time`) to validate the loop end-to-end.
-- Confirm multi-turn flow: user message → Claude → tool_use → execute → tool_result → Claude → final response.
-- Add prompt caching on system prompt and tool definitions.
-- **Prompt management:** System prompt lives in a template file (`prompts/system.md`), with dynamic context (current time, etc.) injected at runtime via a `PromptBuilder`.
-- **Design discipline:** write tool functions as clean, stateless, JSON-serializable Python so they can become MCP tools later without redesign.
-- **Error strategy:** Low-level modules don't catch errors; bot/agent layer catches exceptions and sends user-friendly messages via Telegram.
+### Stage 2: Agent Loop with MCP Tool Use ✓
+- MCP server (`tools/server.py`) with `add_fact` placeholder tool
+- MCP client (`bot/mcp_client.py`) that spawns the server, performs the initialization handshake, and fetches the tool list
+- Agent loop (`bot/agent.py`) that drives the Claude conversation and dispatches tool calls through the MCP client
+- Prompt caching on system prompt and tool list
+- System prompt in `prompts/system.md` with dynamic context injected via `PromptBuilder`
+- End-to-end flow validated: user message → Claude → tool_use → MCP client → MCP server → tool_result → Claude → final response
 
-- ### Stage 2b: Context Management & Short-Term Memory
-- Append-only `events` table logs every agent loop event (user messages, API calls, tool use, tool results, assistant responses). Permanent record — never truncated.
-- `message_context` table holds an ordered set of recent entries injected into each turn's prompt. This is the "working memory."
-- After each assistant response, a lightweight curation API call (no tools, no system prompt, minimal tokens) asks Claude which context entries are still relevant. Returns a JSON array of indices to keep.
-- **Why model-driven over fixed window:** Avoids accidentally dropping mid-conversation context while keeping stale context cheap to discard. The full event log means curation is cold-storage demotion, not deletion.
-- Existing tools (e.g., `search_facts`) can query the events table to recover anything curated out of active context.
+### Stage 2b: Context Management & Short-Term Memory
+- Append-only `events` table logs every agent loop event (user messages, API calls, tool use, tool results, assistant responses)
+- `message_context` table holds an ordered set of recent entries injected into each turn's prompt
+- After each assistant response, a lightweight Claude API call (no tools, no system prompt) determines which context entries to retain; returns a JSON array of indices
+- `search_facts` and similar tools can query the events table to retrieve entries not in active context
 
 ### Stage 3: SQLite Database
-- Start with a minimal schema: `facts` table (category/key/value), `notes` table with FTS for search, `mutation_log` table for audit.
-- Add more structured tables (projects, tasks, calendar events) as real needs emerge.
-- Write curated helper functions in `tools/db.py`: `add_fact`, `search_facts`, `update_fact`, `list_notes`, etc.
-- Seed with simple test data.
+- Schema: `facts` (category/key/value), `notes` (FTS), `mutation_log`
+- Additional structured tables (projects, tasks, calendar events) added as needed
+- Tool functions in `tools/db.py`: `add_fact`, `search_facts`, `update_fact`, `list_notes`, etc.
 
 ### Stage 4: Agent + Database Integration
-- Wire the DB tool functions into the native tool-use loop from Stage 2.
-- Start with ~5 tools. Add more as patterns emerge, not speculatively.
-- Test end-to-end: query DB → send to Claude → Claude calls tools → response.
-- Verify mutation log captures all writes.
+- Wire DB tool functions into the MCP server
+- Start with ~5 tools
+- Verify mutation log captures all writes
 
 ### Stage 5: Telegram Bot
-- Build bot using `python-telegram-bot` with long polling (no public URL needed).
-- **Auth: allowlist check on sender ID — the bot only responds to you.** This is non-negotiable and must ship with the first version.
-- Route incoming messages through the agent loop.
-- Send final responses back via Telegram.
-- Basic error handling: what happens if Claude API fails, if Telegram fails.
-
-### Stage 5.5: MCP Refactor
-- Create `mcp_server.py` using the Python MCP SDK.
-- Wrap existing DB tool functions as MCP tools (mostly decorators — logic unchanged).
-- Convert bot into an MCP client: spawn the MCP server as a stdio subprocess, fetch tool list, route Claude's tool calls through MCP protocol.
-- Verify behavior is identical to the pre-refactor version.
-- **Learning outcome:** understand JSON-RPC flow, tool discovery, client/server split. End state: an MCP server that could also be plugged into Claude Desktop or Claude Code.
+- `python-telegram-bot` with long polling
+- Allowlist check on sender ID on every incoming message
+- Route incoming messages through the agent loop
+- Forward responses and errors back via Telegram
 
 ### Stage 6: Monitoring Service
-- Run as a `systemd` service on the Linux host.
-- Handle automatic restarts on crash.
-- Structured logging to a file.
-- Basic health checks.
+- `systemd` service on the Linux host
+- Structured logging to a file
+- Basic health checks
 
 ### Stage 7: Security Review & Hardening
-- Audit secret management (API keys, tokens, Telegram bot token).
-- Review DB access patterns and mutation log completeness.
-- Test edge cases: malformed input, API outages, DB corruption.
-- Lock down file permissions on DB and .env.
-- Review auth allowlist.
-- Consider rate limiting and cost monitoring.
+- Audit secret management (API keys, Telegram bot token)
+- Review DB access patterns and mutation log completeness
+- Test edge cases: malformed input, API outages, DB corruption
+- Lock down file permissions on DB and `.env`
+- Review auth allowlist
+- Rate limiting and cost monitoring

@@ -1,62 +1,22 @@
 """
 Agent loop: handles multi-turn conversation with Claude API and tool use.
+Tools are discovered from the MCP server at startup rather than hardcoded here.
 Implements prompt caching for cost reduction on repeated context.
 """
 
 from typing import Any
+
 from anthropic import Anthropic
+
+from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
 _prompt_builder = PromptBuilder()
 
-TOOLS = [
-    {
-        "name": "add_fact",
-        "description": "Add a fact to the knowledge base",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "key": {
-                    "type": "string",
-                    "description": "Key to store the fact under",
-                },
-                "value": {
-                    "type": "string",
-                    "description": "Value of the fact",
-                },
-                "category": {
-                    "type": "string",
-                    "description": "Category for organization",
-                },
-            },
-            "required": ["key", "value"],
-        },
-        "cache_control": {"type": "ephemeral"},
-    },
-]
 
-
-def add_fact(key: str, value: str, category: str = "general") -> str:
-    """Add a fact to the knowledge base (placeholder - will integrate with DB in Stage 3)."""
-    return f"Stored fact: {key}={value} (category: {category})"
-
-
-_TOOL_FUNCTIONS = {
-    "add_fact": add_fact,
-}
-
-
-def _execute_tool(tool_name: str, tool_input: dict) -> str:
-    if tool_name not in _TOOL_FUNCTIONS:
-        return f"Error: Unknown tool '{tool_name}'"
-    try:
-        return str(_TOOL_FUNCTIONS[tool_name](**tool_input))
-    except TypeError as e:
-        return f"Error calling {tool_name}: {e}"
-
-
-def run_loop(
+async def run_loop(
     client: Anthropic,
+    mcp: MCPClient,
     messages: list[dict[str, Any]],
     user_message: str,
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -81,7 +41,7 @@ def run_loop(
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            tools=TOOLS,
+            tools=mcp.tools,
             messages=messages,
         )
 
@@ -95,15 +55,17 @@ def run_loop(
             return final_text, messages
 
         elif response.stop_reason == "tool_use":
-            tool_results = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": _execute_tool(block.name, block.input),
-                }
-                for block in response.content
-                if block.type == "tool_use"
-            ]
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    result = await mcp.call_tool(block.name, block.input)
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        }
+                    )
             messages.append({"role": "user", "content": tool_results})
 
         else:
