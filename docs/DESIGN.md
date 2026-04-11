@@ -2,40 +2,66 @@
 
 ## Layout
 ```
-bot/agent.py              Agent class with a run() loop
-bot/main.py               test harness that sends scripted messages to Agent
-bot/prompt_builder.py     loads prompts/system.md and injects dynamic context
-db/                       empty
-tools/                    empty
-tests/                    empty
-prompts/system.md         system prompt template with {current_time} placeholder
+bot/agent.py              Agent loop (run_loop function)
+bot/main.py               Test harness that sends scripted messages through the loop
+bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
+bot/prompt_builder.py     Loads prompts/system.md and injects dynamic context
+tools/server.py           MCP server exposing tools over stdio
+db/                       Empty
+tests/                    Empty
+prompts/system.md         System prompt template with {current_time} placeholder
 ```
 
+## Architecture
+
+Tools are defined in `tools/server.py`, an MCP server that runs as a subprocess
+communicating over stdio. The bot is an MCP client that spawns this server on startup.
+
 ## Flow
-`main.py` instantiates an `Agent`, then sends it test messages one at a time. `Agent.run(message)`:
-1. Appends the message to `self.conversation_history`.
-2. Calls Claude with the history, the rendered system prompt from `PromptBuilder`, and two tool definitions.
-3. On `end_turn`, extracts the text, appends the assistant response to history, and returns it.
-4. On `tool_use`, appends the assistant response to history, processes **all** tool_use blocks in the response (collecting results into a list), appends a single `user` message containing all tool results, then loops.
 
-## Tools
-Two toy tools are defined inline in `agent.py`:
-- `get_current_time()` — returns `datetime.now().isoformat()`.
-- `add_fact(key, value, category)` — returns a formatted string; does not persist anything.
+`main.py` opens an `mcp_client()` context, then sends test messages through `run_loop`.
 
-Tool dispatch is handled by a `TOOL_FUNCTIONS` dict mapping tool names to callables, and a `process_tool_call(tool_name, tool_input)` method on `Agent` that looks up and invokes them. Unknown tool names return an error string; `TypeError` (bad arguments) is caught and returned as an error string. This is the seam where real DB tools will slot in during Stage 3.
+`run_loop(client, mcp, messages, user_message)`:
+1. Appends the user message to the conversation history.
+2. Calls Claude with the history, rendered system prompt, and tool list from the MCP server.
+3. On `end_turn`, extracts the final text response and returns it with updated history.
+4. On `tool_use`, dispatches each tool call through `mcp.call_tool`, collects results
+   into a single `user` message, appends it to history, and loops.
+
+## MCP Client (`bot/mcp_client.py`)
+
+`mcp_client()` is an async context manager that:
+- Spawns `tools/server.py` as a subprocess via `StdioServerParameters`
+- Performs the MCP initialization handshake (`session.initialize()`)
+- Fetches the tool list from the server (`session.list_tools()`)
+- Converts MCP `Tool` objects to the dict format the Anthropic API expects
+- Adds `cache_control: ephemeral` to the last tool
+- Yields an `MCPClient` instance with `.tools` and `.call_tool(name, arguments)`
+
+## MCP Server (`tools/server.py`)
+
+Registers two handlers via the raw MCP SDK:
+- `@server.list_tools()` — returns the list of available tools
+- `@server.call_tool()` — dispatches tool calls by name
+
+Currently exposes one tool:
+- `add_fact(key, value, category)` — placeholder; returns a confirmation string
 
 ## State
-Conversation history is an in-memory list on the `Agent` instance. No database, no persistence, no Telegram, no auth. `Agent.reset()` clears the history for a fresh start.
 
-## System prompt
-`PromptBuilder` (in `bot/prompt_builder.py`) loads `prompts/system.md` at init time and injects `{current_time}` via `.format()` on each `build()` call. `Agent.__init__` instantiates a `PromptBuilder` and calls `self._prompt_builder.build()` on every API call.
+Conversation history is an in-memory list passed through `run_loop`. No persistence.
 
-## Prompt caching
-The system prompt block is marked `cache_control: ephemeral`, which caches it along with the tool definitions.
+## System Prompt
+
+`PromptBuilder` loads `prompts/system.md` at init time and injects `{current_time}`
+via `.format()` on each `build()` call. The system prompt block is marked
+`cache_control: ephemeral`.
 
 ## Config
-`.env.example` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` is currently consumed.
+
+`.env.example` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` is currently consumed.
 
 ## Model
-`claude-haiku-4-5-20251001` with `max_tokens=1024`. The token limit is low and should be raised to 4096 before real use.
+
+`claude-haiku-4-5-20251001` with `max_tokens=8192`.
