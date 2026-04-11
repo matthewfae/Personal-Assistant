@@ -1,8 +1,8 @@
 """
 Mutation log writer.
 
-Called by db/facts.py and db/notes.py after every write. Takes an open
-connection so the log entry is part of the same transaction as the mutation.
+Called by db/facts.py after every write. Takes an open connection so
+the log entry is part of the same transaction as the mutation.
 """
 
 import json

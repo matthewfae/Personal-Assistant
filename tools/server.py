@@ -18,7 +18,6 @@ from mcp.server.lowlevel.server import Server
 
 from db.connection import init_db
 import db.facts as facts_db
-import db.notes as notes_db
 
 server = Server("personal-assistant-tools")
 
@@ -83,44 +82,6 @@ async def list_tools() -> list[types.Tool]:
                 },
             },
         ),
-        types.Tool(
-            name="add_note",
-            description="Create a new note with a title, optional body, and optional tags.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "body": {"type": "string", "description": "Note content"},
-                    "tags": {
-                        "type": "string",
-                        "description": "Comma-separated tags (e.g. 'work,ideas')",
-                    },
-                },
-                "required": ["title"],
-            },
-        ),
-        types.Tool(
-            name="search_notes",
-            description="Full-text search across note title, body, and tags.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "limit": {"type": "integer", "description": "Max results (default 10)"},
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="list_notes",
-            description="List notes (title and tags only), most recently updated first.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Max results (default 10)"},
-                },
-            },
-        ),
     ]
 
 
@@ -167,35 +128,6 @@ def _dispatch(name: str, arguments: dict) -> str:
         if not results:
             return "No facts stored yet."
         return "\n".join(f"[{r['category']}] {r['key']} = {r['value']}" for r in results)
-
-    if name == "add_note":
-        note = notes_db.add_note(
-            title=arguments["title"],
-            body=arguments.get("body", ""),
-            tags=arguments.get("tags", ""),
-        )
-        return f"Note #{note['id']} created: {note['title']}"
-
-    if name == "search_notes":
-        results = notes_db.search_notes(
-            query=arguments["query"],
-            limit=arguments.get("limit", 10),
-        )
-        if not results:
-            return f"No notes found matching '{arguments['query']}'"
-        parts = []
-        for r in results:
-            snippet = r["body"][:120].replace("\n", " ")
-            parts.append(f"#{r['id']} {r['title']} [{r['tags']}]\n  {snippet}")
-        return "\n\n".join(parts)
-
-    if name == "list_notes":
-        results = notes_db.list_notes(limit=arguments.get("limit", 10))
-        if not results:
-            return "No notes stored yet."
-        return "\n".join(
-            f"#{r['id']} {r['title']} [{r['tags']}] — {r['updated_at']}" for r in results
-        )
 
     raise ValueError(f"Unknown tool: {name}")
 

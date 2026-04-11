@@ -49,41 +49,6 @@ CREATE TABLE IF NOT EXISTS facts (
     UNIQUE(category, key)
 );
 
-CREATE TABLE IF NOT EXISTS notes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    title       TEXT    NOT NULL,
-    body        TEXT    NOT NULL DEFAULT '',
-    tags        TEXT    NOT NULL DEFAULT '',
-    created_at  TEXT    NOT NULL,
-    updated_at  TEXT    NOT NULL
-);
-
--- FTS5 index over notes. Triggers below keep it in sync.
-CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-    title,
-    body,
-    tags,
-    content='notes',
-    content_rowid='id'
-);
-
-CREATE TRIGGER IF NOT EXISTS notes_fts_insert AFTER INSERT ON notes BEGIN
-    INSERT INTO notes_fts(rowid, title, body, tags)
-    VALUES (new.id, new.title, new.body, new.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS notes_fts_update AFTER UPDATE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, title, body, tags)
-    VALUES ('delete', old.id, old.title, old.body, old.tags);
-    INSERT INTO notes_fts(rowid, title, body, tags)
-    VALUES (new.id, new.title, new.body, new.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS notes_fts_delete AFTER DELETE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, title, body, tags)
-    VALUES ('delete', old.id, old.title, old.body, old.tags);
-END;
-
 CREATE TABLE IF NOT EXISTS mutation_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     table_name  TEXT    NOT NULL,
