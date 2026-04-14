@@ -6,7 +6,7 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Stage 3 (events-driven rebuild) is complete. The agent loop writes every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at turn start. Stage 4 (read/search tools) is next. Telegram integration, monitoring, and hardening are deferred. See `PROJECT_PLAN.md` for the full stage breakdown.
+Stage 3 (events-driven rebuild) is complete. The agent loop writes every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at turn start. Stage 4 (dynamic context trimming) is in progress: after each turn, a post-turn meta-call asks Claude to set the projection bound for the next turn, stored as a `context_decision` event. Telegram integration, monitoring, and hardening are deferred. See `PROJECT_PLAN.md` for the full stage breakdown.
 
 ## Repository layout
 

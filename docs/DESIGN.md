@@ -2,15 +2,16 @@
 
 ## Layout
 ```
-bot/agent.py              Agent loop, event writing, projection, causality tree debug
+bot/agent.py              Agent loop, event writing, projection, post-turn meta-call, causality tree debug
 bot/main.py               Test harness that sends scripted messages through the loop
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
-bot/prompt_builder.py     Loads prompts/system.md and injects dynamic context
+bot/prompt_builder.py     Loads prompt templates from prompts/, injects ambient context
 tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
 db/facts.py               CRUD for the facts table
-prompts/system.md         System prompt template with {current_time} placeholder
+prompts/system.md         System prompt template ({current_time} available)
+prompts/context_decision.md  Post-turn meta-call template ({events} required)
 ```
 
 ## Architecture
@@ -79,10 +80,13 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | type                | payload fields (beyond `v`)                              | parent              |
 |---------------------|----------------------------------------------------------|---------------------|
 | `user_message`      | `content`                                                | None (turn root)    |
-| `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` |
+| `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` or `assistant_message` (meta-call) |
 | `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
 | `tool_result`       | `tool_use_id`, `content`                                 | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
+| `context_decision`  | `from_event_id`                                          | `api_call` (meta)   |
+
+`context_decision` is excluded from `project_messages` projection. It is queried separately at turn start to determine the projection bound.
 
 ## Tools (current surface)
 
@@ -94,11 +98,13 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 
 `run_loop(client, mcp, user_message)`:
 1. Generates a fresh `turn_id` (UUID hex). `conversation_id` is module-level, stable for the process.
-2. Calls `project_messages(conversation_id)` to build the initial messages list from the events table.
-3. Appends the user message in memory and writes a `user_message` event to the DB.
-4. Calls Claude with the history, rendered system prompt, and tool list. Writes an `api_call` event.
-5. On `end_turn`: writes an `assistant_message` event and returns the text.
-6. On `tool_use`: writes a `tool_call` event, dispatches via `mcp.call_tool`, writes a `tool_result` event, then loops. Next `api_call`'s parent is the last `tool_result`.
+2. Fetches the most recent `context_decision` event for this `conversation_id` to get `_from_event_id` (defaults to `0` if none exists).
+3. Calls `project_messages(conversation_id, from_event_id)` to build the initial messages list from the events table.
+4. Appends the user message in memory and writes a `user_message` event to the DB.
+5. Calls Claude with the history, rendered system prompt, and tool list. Writes an `api_call` event.
+6. On `end_turn`: writes an `assistant_message` event.
+7. Post-turn meta-call: fetches all events for this `conversation_id` (id, type, timestamp, payload), sends them to Claude with a short prompt asking for the oldest `from_event_id` to include next turn. Writes an `api_call` event (parent: `assistant_message`) and a `context_decision` event (parent: meta `api_call`). Updates `_from_event_id`. Returns `final_text`.
+8. On `tool_use`: writes a `tool_call` event, dispatches via `mcp.call_tool`, writes a `tool_result` event, then loops. Next `api_call`'s parent is the last `tool_result`.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
 
@@ -115,13 +121,19 @@ All events carry correct `parent_event_id` (causality chain). In-memory message 
 
 Events table is the source of truth. Conversation history is projected from events at each turn start. In-memory message list exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
 
+`_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the most recent `context_decision` event for this `conversation_id` at each turn start and updated after the post-turn meta-call. Resets to `0` on process restart (all events re-projected until the first meta-call completes).
+
 ## Debug
 
 `debug_causality_tree(turn_id)` in `bot/agent.py` — queries all events for a turn, walks the parent→child tree, returns an indented text representation.
 
-## System Prompt
+## Prompt Templates
 
-`PromptBuilder` loads `prompts/system.md` at init and injects `{current_time}` on each `build()` call. System prompt block is marked `cache_control: ephemeral`.
+`PromptBuilder(template)` loads a named file from `prompts/` at init. `build(**kwargs)` injects ambient context (`current_time`) automatically and merges any caller-supplied kwargs. Templates declare their variables; callers pass only what is specific to their use case.
+
+Two instances in `agent.py`:
+- `_system_prompt` — renders `prompts/system.md`, used as the system block (marked `cache_control: ephemeral`).
+- `_context_decision_prompt` — renders `prompts/context_decision.md`, used for the post-turn meta-call (requires `events=` kwarg).
 
 ## Config
 

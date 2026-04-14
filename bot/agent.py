@@ -14,10 +14,14 @@ from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
-_prompt_builder = PromptBuilder()
+_system_prompt = PromptBuilder("system.md")
+_context_decision_prompt = PromptBuilder("context_decision.md")
 
 # One conversation_id per process start (stable for the process lifetime).
 conversation_id: str = uuid.uuid4().hex
+
+# Tracks the oldest event id to include when projecting messages next turn.
+_from_event_id: int = 0
 
 
 def _write_event(conn, turn_id, conversation_id, event_type, payload, parent_event_id=None) -> int:
@@ -37,7 +41,7 @@ def _write_event(conn, turn_id, conversation_id, event_type, payload, parent_eve
     return cursor.lastrowid
 
 
-def project_messages(conversation_id: str) -> list[dict]:
+def project_messages(conversation_id: str, from_event_id: int = 0) -> list[dict]:
     """Build the messages array from events for the given conversation."""
     with get_db() as conn:
         rows = conn.execute(
@@ -45,10 +49,11 @@ def project_messages(conversation_id: str) -> list[dict]:
             SELECT type, payload
             FROM events
             WHERE conversation_id = ?
+              AND id >= ?
               AND type IN ('user_message', 'assistant_message')
-            ORDER BY timestamp ASC
+            ORDER BY id ASC
             """,
-            (conversation_id,),
+            (conversation_id, from_event_id),
         ).fetchall()
 
     messages = []
@@ -59,6 +64,75 @@ def project_messages(conversation_id: str) -> list[dict]:
         elif row["type"] == "assistant_message":
             messages.append({"role": "assistant", "content": payload["content"]})
     return messages
+
+
+def _load_from_event_id(conversation_id: str) -> int:
+    """Return the from_event_id from the most recent context_decision event, or 0."""
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT payload FROM events
+            WHERE conversation_id = ? AND type = 'context_decision'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+    if row is None:
+        return 0
+    return json.loads(row["payload"])["from_event_id"]
+
+
+async def _run_context_decision(
+    client: Anthropic,
+    turn_id: str,
+    conversation_id: str,
+    assistant_message_id: int,
+) -> None:
+    """Make a post-turn meta-call to determine the oldest event to keep next turn."""
+    global _from_event_id
+
+    # Fetch ALL events for this conversation.
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, type, timestamp, payload FROM events "
+            "WHERE conversation_id = ? ORDER BY id ASC",
+            (conversation_id,),
+        ).fetchall()
+
+    # Format events as a plain-text list.
+    lines = []
+    for row in rows:
+        lines.append(
+            f"id={row['id']} type={row['type']} ts={row['timestamp']} payload={row['payload']}"
+        )
+    formatted_events = "\n".join(lines)
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=16,
+        messages=[{"role": "user", "content": _context_decision_prompt.build(events=formatted_events)}],
+    )
+
+    parsed_id = int(response.content[0].text.strip())
+
+    with get_db() as conn:
+        meta_api_call_id = _write_event(
+            conn, turn_id, conversation_id, "api_call",
+            {
+                "v": 1,
+                "model": "claude-haiku-4-5-20251001",
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            },
+            parent_event_id=assistant_message_id,
+        )
+        _write_event(
+            conn, turn_id, conversation_id, "context_decision",
+            {"v": 1, "from_event_id": parsed_id},
+            parent_event_id=meta_api_call_id,
+        )
+
+    _from_event_id = parsed_id
 
 
 async def run_loop(
@@ -77,7 +151,8 @@ async def run_loop(
     # Fresh turn_id for every run_loop call; all events in this turn share it.
     turn_id: str = uuid.uuid4().hex
 
-    messages = project_messages(conversation_id)
+    from_event_id = _load_from_event_id(conversation_id)
+    messages = project_messages(conversation_id, from_event_id)
     messages.append({"role": "user", "content": user_message})
 
     with get_db() as conn:
@@ -98,7 +173,7 @@ async def run_loop(
             system=[
                 {
                     "type": "text",
-                    "text": _prompt_builder.build(),
+                    "text": _system_prompt.build(),
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
@@ -122,11 +197,12 @@ async def run_loop(
                 "",
             )
             with get_db() as conn:
-                _write_event(
+                assistant_message_event_id = _write_event(
                     conn, turn_id, conversation_id, "assistant_message",
                     {"v": 1, "content": final_text},
                     parent_event_id=api_call_id,
                 )
+            await _run_context_decision(client, turn_id, conversation_id, assistant_message_event_id)
             return final_text
 
         elif response.stop_reason == "tool_use":
