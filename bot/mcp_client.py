@@ -26,8 +26,8 @@ class MCPClient:
         """Tool definitions formatted for the Anthropic API."""
         return self._tools
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
-        result = await self._session.call_tool(name, arguments)
+    async def call_tool(self, name: str, arguments: dict, meta: dict | None = None) -> str:
+        result = await self._session.call_tool(name, arguments, meta=meta)
         return "\n".join(
             block.text for block in result.content if hasattr(block, "text")
         )

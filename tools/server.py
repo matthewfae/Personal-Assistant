@@ -11,13 +11,16 @@ This module is the boundary between MCP and the DB layer:
 """
 
 import asyncio
+import sqlite3
 
 import mcp.server.stdio
 import mcp.types as types
 from mcp.server.lowlevel.server import Server
 
-from db.connection import init_db
+from db.connection import get_db, get_db_path, init_db
 import db.facts as facts_db
+import db.mutation_log as mutation_log
+import db.events as events_db
 
 server = Server("personal-assistant-tools")
 
@@ -44,92 +47,106 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["key", "value"],
             },
         ),
-        types.Tool(
-            name="get_fact",
-            description="Retrieve a single fact by category and key.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string"},
-                    "category": {"type": "string", "description": "Default: 'general'"},
-                },
-                "required": ["key"],
-            },
-        ),
-        types.Tool(
-            name="search_facts",
-            description=(
-                "Search facts whose key or value contains the query string. "
-                "Optionally restrict to a category."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "category": {"type": "string"},
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="list_facts",
-            description="List stored facts, most recently updated first.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "category": {"type": "string", "description": "Filter by category"},
-                    "limit": {"type": "integer", "description": "Max results (default 20)"},
-                },
-            },
-        ),
     ]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    result = _dispatch(name, arguments)
-    return [types.TextContent(type="text", text=result)]
+    if name != "add_fact":
+        raise ValueError(f"Unknown tool: {name}")
 
+    # Extract meta from request context
+    ctx = server.request_context
+    meta = ctx.meta if ctx else None
+    turn_id = meta.model_extra.get("turn_id") if meta else None
+    conversation_id = meta.model_extra.get("conversation_id") if meta else None
+    tool_call_event_id = meta.model_extra.get("tool_call_event_id") if meta else None
+    tool_use_id = meta.model_extra.get("tool_use_id") if meta else None
 
-def _dispatch(name: str, arguments: dict) -> str:
-    """Route a tool call to the DB layer and format the result as a string."""
-    if name == "add_fact":
-        fact = facts_db.add_fact(
-            key=arguments["key"],
-            value=arguments["value"],
-            category=arguments.get("category", "general"),
+    key = arguments["key"]
+    value = arguments["value"]
+    category = arguments.get("category", "general")
+
+    # Open a connection in autocommit mode for full manual transaction control.
+    # isolation_level=None prevents Python's sqlite3 from auto-issuing BEGIN DEFERRED,
+    # which would conflict with our explicit BEGIN IMMEDIATE.
+    conn = sqlite3.connect(get_db_path(), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        result = facts_db.add_fact(conn, key=key, value=value, category=category)
+
+        verb = "Updated" if result["operation"] == "updated" else "Stored"
+        result_string = f"{verb} fact [{result['category']}] {result['key']} = {result['value']}"
+
+        mutation_log.log(
+            conn,
+            "facts",
+            result["operation"],
+            result["id"],
+            {
+                "category": result["category"],
+                "key": result["key"],
+                "value": result["value"],
+            },
         )
-        verb = "Updated" if fact["operation"] == "updated" else "Stored"
-        return f"{verb} fact [{fact['category']}] {fact['key']} = {fact['value']}"
 
-    if name == "get_fact":
-        fact = facts_db.get_fact(
-            key=arguments["key"],
-            category=arguments.get("category", "general"),
+        payload = {
+            "v": 1,
+            "tool_use_id": tool_use_id,
+            "tool_call_event_id": tool_call_event_id,
+            "is_error": False,
+            "content": result_string,
+        }
+        events_db.append(
+            conn,
+            "tool_result",
+            payload,
+            turn_id,
+            conversation_id,
+            parent_event_id=tool_call_event_id,
         )
-        if fact is None:
-            return f"No fact found for [{arguments.get('category', 'general')}] {arguments['key']}"
-        return f"[{fact['category']}] {fact['key']} = {fact['value']}"
 
-    if name == "search_facts":
-        results = facts_db.search_facts(
-            query=arguments["query"],
-            category=arguments.get("category"),
-        )
-        if not results:
-            return f"No facts found matching '{arguments['query']}'"
-        return "\n".join(f"[{r['category']}] {r['key']} = {r['value']}" for r in results)
+        conn.execute("COMMIT")
+        conn.close()
 
-    if name == "list_facts":
-        results = facts_db.list_facts(
-            category=arguments.get("category"),
-            limit=arguments.get("limit", 20),
-        )
-        if not results:
-            return "No facts stored yet."
-        return "\n".join(f"[{r['category']}] {r['key']} = {r['value']}" for r in results)
+        return [types.TextContent(type="text", text=result_string)]
 
-    raise ValueError(f"Unknown tool: {name}")
+    except Exception as e:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        conn.close()
+
+        # Write the error tool_result event on a fresh connection since the
+        # original transaction is in a failed state.
+        error_payload = {
+            "v": 1,
+            "tool_use_id": tool_use_id,
+            "tool_call_event_id": tool_call_event_id,
+            "is_error": True,
+            "content": str(e),
+        }
+        try:
+            with get_db() as err_conn:
+                events_db.append(
+                    err_conn,
+                    "tool_result",
+                    error_payload,
+                    turn_id,
+                    conversation_id,
+                    parent_event_id=tool_call_event_id,
+                )
+        except Exception:
+            pass  # Best-effort; don't mask the original error
+
+        return [types.TextContent(type="text", text=str(e))]
 
 
 async def main():

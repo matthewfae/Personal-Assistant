@@ -28,6 +28,7 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
         conn.commit()
@@ -57,6 +58,38 @@ CREATE TABLE IF NOT EXISTS mutation_log (
     data_json   TEXT,
     timestamp   TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT    NOT NULL,
+    turn_id          TEXT    NOT NULL,
+    conversation_id  TEXT    NOT NULL,
+    correlation_id   TEXT    NOT NULL,
+    type             TEXT    NOT NULL,
+    parent_event_id  INTEGER REFERENCES events(id),
+    payload          TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_conv_ts
+    ON events(conversation_id, timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_events_type
+    ON events(type);
+
+CREATE INDEX IF NOT EXISTS idx_events_parent
+    ON events(parent_event_id);
+
+CREATE TRIGGER IF NOT EXISTS events_no_update
+    BEFORE UPDATE ON events
+BEGIN
+    SELECT RAISE(ABORT, 'events table is append-only: UPDATE not permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS events_no_delete
+    BEFORE DELETE ON events
+BEGIN
+    SELECT RAISE(ABORT, 'events table is append-only: DELETE not permitted');
+END;
 """
 
 

@@ -7,6 +7,6 @@ dependencies = [
     "anthropic>=0.28.0",
     "python-telegram-bot>=21.0",
     "python-dotenv>=1.0.0",
-    "mcp>=0.1.0",
+    "mcp>=1.27.0",
 ]
 

@@ -6,7 +6,9 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Early. The agent loop, MCP tool plumbing, and an exploratory first-pass database layer are in place. An events-driven rebuild of the core architecture is the current focus. Telegram integration, monitoring, and hardening are deferred to later stages. See `PROJECT_PLAN.md` for the full stage breakdown and current focus.
+Stage 3 complete as of 2026-04-14. The full events-driven architecture is in place: append-only `events` table, `turn_id`/`conversation_id` threading, messages-as-projection replacing in-memory history, `add_fact` as the sole tool with the MCP server owning the atomic triple-write transaction, and correct `parent_event_id` causality wiring throughout. The test harness (`bot/main.py`) drives the loop end-to-end against the real Claude API.
+
+Next up: Stage 4 (read/search tools, added only when driven by a concrete need) and Stage 5 (Telegram integration). Monitoring and hardening are deferred to later stages. See `PROJECT_PLAN.md` for the full stage breakdown.
 
 ## Repository layout
 
@@ -26,7 +28,7 @@ logs/        Runtime log output
 Read these in order depending on what you need:
 
 - **`PROJECT_PLAN.md`** — start here. Goals, architectural decisions, stages, deferred work. Highest level.
-- **`docs/DESIGN.md`** — implementation-level description of the current code: layout, layering rules, schema, agent flow. Middle level. Being updated as the events-driven rebuild lands.
+- **`docs/DESIGN.md`** — implementation-level description of the current code: layout, layering rules, schema, agent flow. Middle level. Updated to reflect Stage 3.
 - **`README.md`** — this file. Front door and orientation.
 
 ## Stack
