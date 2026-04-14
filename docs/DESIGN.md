@@ -92,7 +92,7 @@ Timestamps are ISO-8601 UTC strings.
 
 ## State
 
-Conversation history is an in-memory list passed through `run_loop`. No persistence yet.
+Conversation history is an in-memory list passed through `run_loop` for the duration of the turn, then discarded. No cross-turn persistence yet — that will come in Stage 3c, where the events table is projected at turn start to seed the list.
 
 ## System Prompt
 
