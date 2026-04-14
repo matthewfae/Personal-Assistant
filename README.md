@@ -21,13 +21,10 @@ scripts/     Helper scripts
 logs/        Runtime log output
 ```
 
-## Documentation
+## Docs
 
-Read these in order depending on what you need:
-
-- **`PROJECT_PLAN.md`** — start here. Goals, architectural decisions, stages, deferred work. Highest level.
-- **`docs/DESIGN.md`** — implementation-level description of the current code: layout, layering rules, schema, agent flow. Middle level. Being updated as the events-driven rebuild lands.
-- **`README.md`** — this file. Front door and orientation.
+- **`PROJECT_PLAN.md`** — architecture decisions, current stage, upcoming stages.
+- **`docs/DESIGN.md`** — layout, schema, agent flow, and current tool surface.
 
 ## Stack
 
