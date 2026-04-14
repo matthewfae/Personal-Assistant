@@ -444,7 +444,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.28.0" },
-    { name = "mcp", specifier = ">=0.1.0" },
+    { name = "mcp", specifier = ">=1.27.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "python-telegram-bot", specifier = ">=21.0" },
 ]
