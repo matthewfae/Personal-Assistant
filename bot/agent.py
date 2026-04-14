@@ -6,6 +6,7 @@ Implements prompt caching for cost reduction on repeated context.
 
 import json
 import uuid
+from datetime import datetime
 
 from anthropic import Anthropic
 
@@ -17,6 +18,22 @@ _prompt_builder = PromptBuilder()
 
 # One conversation_id per process start (stable for the process lifetime).
 conversation_id: str = uuid.uuid4().hex
+
+
+def _write_event(conn, turn_id, conversation_id, event_type, payload, parent_event_id=None):
+    """Insert one event row. conn must be an open sqlite3 connection."""
+    conn.execute(
+        "INSERT INTO events (timestamp, turn_id, conversation_id, type, parent_event_id, payload) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            datetime.utcnow().isoformat() + 'Z',
+            turn_id,
+            conversation_id,
+            event_type,
+            parent_event_id,
+            json.dumps(payload),
+        ),
+    )
 
 
 def project_messages(conversation_id: str) -> list[dict]:
@@ -62,6 +79,9 @@ async def run_loop(
     messages = project_messages(conversation_id)
     messages.append({"role": "user", "content": user_message})
 
+    with get_db() as conn:
+        _write_event(conn, turn_id, conversation_id, "user_message", {"v": 1, "content": user_message})
+
     while True:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -77,6 +97,14 @@ async def run_loop(
             messages=messages,
         )
 
+        with get_db() as conn:
+            _write_event(conn, turn_id, conversation_id, "api_call", {
+                "v": 1,
+                "model": "claude-haiku-4-5-20251001",
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            })
+
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
@@ -84,13 +112,28 @@ async def run_loop(
                 (block.text for block in response.content if block.type == "text"),
                 "",
             )
+            with get_db() as conn:
+                _write_event(conn, turn_id, conversation_id, "assistant_message", {"v": 1, "content": final_text})
             return final_text
 
         elif response.stop_reason == "tool_use":
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
+                    with get_db() as conn:
+                        _write_event(conn, turn_id, conversation_id, "tool_call", {
+                            "v": 1,
+                            "tool_use_id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
                     result = await mcp.call_tool(block.name, block.input)
+                    with get_db() as conn:
+                        _write_event(conn, turn_id, conversation_id, "tool_result", {
+                            "v": 1,
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
                     tool_results.append(
                         {
                             "type": "tool_result",

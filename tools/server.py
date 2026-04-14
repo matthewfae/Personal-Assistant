@@ -44,44 +44,6 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["key", "value"],
             },
         ),
-        types.Tool(
-            name="get_fact",
-            description="Retrieve a single fact by category and key.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string"},
-                    "category": {"type": "string", "description": "Default: 'general'"},
-                },
-                "required": ["key"],
-            },
-        ),
-        types.Tool(
-            name="search_facts",
-            description=(
-                "Search facts whose key or value contains the query string. "
-                "Optionally restrict to a category."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "category": {"type": "string"},
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="list_facts",
-            description="List stored facts, most recently updated first.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "category": {"type": "string", "description": "Filter by category"},
-                    "limit": {"type": "integer", "description": "Max results (default 20)"},
-                },
-            },
-        ),
     ]
 
 
@@ -101,33 +63,6 @@ def _dispatch(name: str, arguments: dict) -> str:
         )
         verb = "Updated" if fact["operation"] == "updated" else "Stored"
         return f"{verb} fact [{fact['category']}] {fact['key']} = {fact['value']}"
-
-    if name == "get_fact":
-        fact = facts_db.get_fact(
-            key=arguments["key"],
-            category=arguments.get("category", "general"),
-        )
-        if fact is None:
-            return f"No fact found for [{arguments.get('category', 'general')}] {arguments['key']}"
-        return f"[{fact['category']}] {fact['key']} = {fact['value']}"
-
-    if name == "search_facts":
-        results = facts_db.search_facts(
-            query=arguments["query"],
-            category=arguments.get("category"),
-        )
-        if not results:
-            return f"No facts found matching '{arguments['query']}'"
-        return "\n".join(f"[{r['category']}] {r['key']} = {r['value']}" for r in results)
-
-    if name == "list_facts":
-        results = facts_db.list_facts(
-            category=arguments.get("category"),
-            limit=arguments.get("limit", 20),
-        )
-        if not results:
-            return "No facts stored yet."
-        return "\n".join(f"[{r['category']}] {r['key']} = {r['value']}" for r in results)
 
     raise ValueError(f"Unknown tool: {name}")
 
