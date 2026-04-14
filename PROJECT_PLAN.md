@@ -60,9 +60,11 @@ Start minimal. Add tools only when driven by concrete need. Target surface is **
 **3d.** Tools stripped to `add_fact` only. Agent loop writes all five event types. ✓
 **3e.** `parent_event_id` wired correctly for every event type. `debug_causality_tree()` added. ✓
 
-## Current Stage: Stage 4 — Read/Search Tools
+## Current Stage: Stage 4 — Dynamic Context Trimming
 
-Add read/search tools only when driven by concrete need. The events projection currently serves all read requirements; tools are added only when context can no longer fit the relevant events.
+**4a.** Post-turn meta-call: after `assistant_message` is written, a lightweight API call passes the full event list (id, type, timestamp, payload) for this conversation to Claude and asks for the `from_event_id` — the oldest event ID to include when projecting the next turn. Result stored as a `context_decision` event (`{"v": 1, "from_event_id": N}`). `project_messages` gains a `from_event_id` parameter; the meta-call updates a module-level `_from_event_id` used on every subsequent projection.
+
+Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
 
 ## Upcoming Stages
 
