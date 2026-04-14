@@ -57,6 +57,35 @@ CREATE TABLE IF NOT EXISTS mutation_log (
     data_json   TEXT,
     timestamp   TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT    NOT NULL,
+    turn_id          TEXT    NOT NULL,
+    conversation_id  TEXT    NOT NULL,
+    type             TEXT    NOT NULL,
+    parent_event_id  INTEGER REFERENCES events(id),
+    payload          TEXT    NOT NULL   -- JSON blob, always includes {"v": 1, ...}
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_conversation_timestamp
+    ON events(conversation_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_type
+    ON events(type);
+CREATE INDEX IF NOT EXISTS idx_events_parent
+    ON events(parent_event_id);
+
+CREATE TRIGGER IF NOT EXISTS events_no_update
+    BEFORE UPDATE ON events
+BEGIN
+    SELECT RAISE(FAIL, 'events are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS events_no_delete
+    BEFORE DELETE ON events
+BEGIN
+    SELECT RAISE(FAIL, 'events are immutable');
+END;
 """
 
 
