@@ -14,7 +14,8 @@ from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
-_prompt_builder = PromptBuilder()
+_system_prompt = PromptBuilder("system.md")
+_context_decision_prompt = PromptBuilder("context_decision.md")
 
 # One conversation_id per process start (stable for the process lifetime).
 conversation_id: str = uuid.uuid4().hex
@@ -106,21 +107,10 @@ async def _run_context_decision(
         )
     formatted_events = "\n".join(lines)
 
-    prompt = (
-        "Here are all events in the current conversation:\n\n"
-        "<events>\n"
-        f"{formatted_events}\n"
-        "</events>\n\n"
-        "Return only a single integer: the event ID of the oldest event that should be "
-        "included when building the next turn's context. Choose aggressively — exclude "
-        "anything that is no longer needed. If no prior context is needed, return the ID "
-        "of the most recent user_message event."
-    )
-
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=16,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": _context_decision_prompt.build(events=formatted_events)}],
     )
 
     parsed_id = int(response.content[0].text.strip())
@@ -183,7 +173,7 @@ async def run_loop(
             system=[
                 {
                     "type": "text",
-                    "text": _prompt_builder.build(),
+                    "text": _system_prompt.build(),
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
