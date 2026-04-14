@@ -35,7 +35,7 @@ async def main():
         conversation_id = str(uuid.uuid4())
         for message in test_messages:
             print(f"\nUser: {message}")
-            response = await run_loop(client, mcp, conversation_id, message)
+            response = await run_loop(client, mcp, conversation_id, message, source="test_harness")
             print(f"Assistant: {response}")
             print("-" * 60)
 
