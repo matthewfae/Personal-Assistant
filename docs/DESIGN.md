@@ -2,7 +2,7 @@
 
 ## Layout
 ```
-bot/agent.py              Agent loop (run_loop function)
+bot/agent.py              Agent loop, event writing, projection, causality tree debug
 bot/main.py               Test harness that sends scripted messages through the loop
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
 bot/prompt_builder.py     Loads prompts/system.md and injects dynamic context
@@ -32,11 +32,14 @@ SQLite
 
 Each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tools/server.py` has no SQL.
 
+`bot/agent.py` imports `db/connection.py` directly to write events. This is intentional: event writing is agent-layer responsibility, not tool-layer.
+
 ### MCP Server (`tools/server.py`)
 
 - Tool schemas (what Claude sees: names, descriptions, input shapes)
 - `_dispatch()` — routes tool calls to the DB layer, formats results as strings
 - Calls `init_db()` at startup
+- `sys.path` setup at top so `db/` is importable when spawned as a subprocess
 
 ### DB Layer (`db/`)
 
@@ -60,23 +63,44 @@ facts (id, category, key, value, created_at, updated_at)
     UNIQUE(category, key)
 
 mutation_log (id, table_name, operation, record_id, data_json, timestamp)
+
+events (id, timestamp, turn_id, conversation_id, type, parent_event_id, payload)
+    parent_event_id REFERENCES events(id)
+    INDEX (conversation_id, timestamp)
+    INDEX (type)
+    INDEX (parent_event_id)
+    TRIGGER: no UPDATE or DELETE (events are immutable)
 ```
 
-Timestamps are ISO-8601 UTC strings.
+Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v": 1, ...}`.
+
+## Event Types and Payload Shapes (v: 1)
+
+| type                | payload fields (beyond `v`)                              | parent              |
+|---------------------|----------------------------------------------------------|---------------------|
+| `user_message`      | `content`                                                | None (turn root)    |
+| `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` |
+| `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
+| `tool_result`       | `tool_use_id`, `content`                                 | `tool_call`         |
+| `assistant_message` | `content`                                                | `api_call`          |
 
 ## Tools (current surface)
 
-`add_fact`, `get_fact`, `search_facts`, `list_facts` — all backed by `db/facts.py`.
+`add_fact` only — backed by `db/facts.py`. Read/search tools added only when events projection can no longer serve the relevant context.
 
 ## Agent Flow
 
-`main.py` opens an `mcp_client()` context, then sends test messages through `run_loop`.
+`main.py` calls `init_db()`, opens an `mcp_client()` context, then sends test messages through `run_loop`.
 
-`run_loop(client, mcp, messages, user_message)`:
-1. Appends the user message to the in-memory conversation history.
-2. Calls Claude with the history, rendered system prompt, and tool list.
-3. On `end_turn`, extracts the final text and returns it with updated history.
-4. On `tool_use`, dispatches each tool call through `mcp.call_tool`, collects results into a single `user` message, appends to history, and loops.
+`run_loop(client, mcp, user_message)`:
+1. Generates a fresh `turn_id` (UUID hex). `conversation_id` is module-level, stable for the process.
+2. Calls `project_messages(conversation_id)` to build the initial messages list from the events table.
+3. Appends the user message in memory and writes a `user_message` event to the DB.
+4. Calls Claude with the history, rendered system prompt, and tool list. Writes an `api_call` event.
+5. On `end_turn`: writes an `assistant_message` event and returns the text.
+6. On `tool_use`: writes a `tool_call` event, dispatches via `mcp.call_tool`, writes a `tool_result` event, then loops. Next `api_call`'s parent is the last `tool_result`.
+
+All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
 
 ## MCP Client (`bot/mcp_client.py`)
 
@@ -89,7 +113,11 @@ Timestamps are ISO-8601 UTC strings.
 
 ## State
 
-Conversation history is an in-memory list for the duration of one turn, then discarded. No cross-turn persistence.
+Events table is the source of truth. Conversation history is projected from events at each turn start. In-memory message list exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
+
+## Debug
+
+`debug_causality_tree(turn_id)` in `bot/agent.py` — queries all events for a turn, walks the parent→child tree, returns an indented text representation.
 
 ## System Prompt
 
@@ -97,7 +125,7 @@ Conversation history is an in-memory list for the duration of one turn, then dis
 
 ## Config
 
-`.env.example` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` and `DB_PATH` are currently consumed.
+`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` and `DB_PATH` are currently consumed.
 
 ## Model
 
