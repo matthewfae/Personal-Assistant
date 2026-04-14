@@ -1,6 +1,4 @@
-> **Status note.** This document describes the *current implementation* of the bot as it stands after Stage 2 and the exploratory DB + tool-surface work (see `PROJECT_PLAN.md` → Stage 2.5). An events-driven rebuild is in progress under `PROJECT_PLAN.md` → Stage 3 which will supersede much of what's below — particularly the tool surface, conversation history, and agent flow sections. Sections of this doc will be updated as the rebuild lands; until then, treat this as an accurate description of what exists *today*, not of where we're headed. For target architecture and decisions, see `PROJECT_PLAN.md`.
-
-# Current State
+# Current Implementation
 
 ## Layout
 ```
@@ -32,30 +30,27 @@ db/mutation_log.py    ← Audit writer (called within the same transaction as ea
 SQLite
 ```
 
-**Rule:** each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tools/server.py` has no SQL.
+Each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tools/server.py` has no SQL.
 
 ### MCP Server (`tools/server.py`)
 
-Owns:
 - Tool schemas (what Claude sees: names, descriptions, input shapes)
-- `_dispatch()` — routes tool calls to the DB layer and formats results as strings
-
-Calls `init_db()` at startup so the schema is always ready before any tool is dispatched.
+- `_dispatch()` — routes tool calls to the DB layer, formats results as strings
+- Calls `init_db()` at startup
 
 ### DB Layer (`db/`)
 
 **`connection.py`**
-- `get_db()` — context manager yielding a `sqlite3.Connection` with WAL mode and foreign keys enabled. Commits on clean exit, rolls back on exception.
-- `init_db()` — runs the schema DDL (tables + FTS triggers). Safe to call on every startup (all statements use `CREATE ... IF NOT EXISTS`).
-- Full schema DDL lives here as the single source of truth.
+- `get_db()` — context manager yielding a `sqlite3.Connection` (WAL mode, foreign keys on). Commits on clean exit, rolls back on exception.
+- `init_db()` — runs schema DDL. Safe to call on every startup.
 
 **`mutation_log.py`**
-- `log(conn, table_name, operation, record_id, data)` — inserts one row into `mutation_log`. Takes an open connection so the log entry shares the same transaction as the mutation it records.
+- `log(conn, table_name, operation, record_id, data)` — inserts one row into `mutation_log` on the caller's open connection.
 
-**`facts.py`** — CRUD for the `facts` table
+**`facts.py`**
 - `add_fact(key, value, category)` → dict with `operation: 'inserted' | 'updated'`
 - `get_fact(key, category)` → dict or None
-- `search_facts(query, category?)` → list of dicts (key/value LIKE match)
+- `search_facts(query, category?)` → list of dicts (LIKE match on key/value)
 - `list_facts(category?, limit)` → list of dicts, newest first
 
 ## Schema
@@ -69,42 +64,40 @@ mutation_log (id, table_name, operation, record_id, data_json, timestamp)
 
 Timestamps are ISO-8601 UTC strings.
 
+## Tools (current surface)
+
+`add_fact`, `get_fact`, `search_facts`, `list_facts` — all backed by `db/facts.py`.
+
 ## Agent Flow
 
 `main.py` opens an `mcp_client()` context, then sends test messages through `run_loop`.
 
 `run_loop(client, mcp, messages, user_message)`:
-1. Appends the user message to the conversation history.
-2. Calls Claude with the history, rendered system prompt, and tool list from the MCP server.
-3. On `end_turn`, extracts the final text response and returns it with updated history.
-4. On `tool_use`, dispatches each tool call through `mcp.call_tool`, collects results
-   into a single `user` message, appends it to history, and loops.
+1. Appends the user message to the in-memory conversation history.
+2. Calls Claude with the history, rendered system prompt, and tool list.
+3. On `end_turn`, extracts the final text and returns it with updated history.
+4. On `tool_use`, dispatches each tool call through `mcp.call_tool`, collects results into a single `user` message, appends to history, and loops.
 
 ## MCP Client (`bot/mcp_client.py`)
 
 `mcp_client()` is an async context manager that:
 - Spawns `tools/server.py` as a subprocess via `StdioServerParameters`
-- Performs the MCP initialization handshake (`session.initialize()`)
-- Fetches the tool list from the server (`session.list_tools()`)
-- Converts MCP `Tool` objects to the dict format the Anthropic API expects
+- Performs the MCP initialization handshake
+- Fetches and converts the tool list to Anthropic API format
 - Adds `cache_control: ephemeral` to the last tool
-- Yields an `MCPClient` instance with `.tools` and `.call_tool(name, arguments)`
+- Yields an `MCPClient` with `.tools` and `.call_tool(name, arguments)`
 
 ## State
 
-Conversation history is an in-memory list passed through `run_loop` for the duration of the turn, then discarded. No cross-turn persistence yet — that will come in Stage 3c, where the events table is projected at turn start to seed the list.
+Conversation history is an in-memory list for the duration of one turn, then discarded. No cross-turn persistence.
 
 ## System Prompt
 
-`PromptBuilder` loads `prompts/system.md` at init time and injects `{current_time}`
-via `.format()` on each `build()` call. The system prompt block is marked
-`cache_control: ephemeral`.
+`PromptBuilder` loads `prompts/system.md` at init and injects `{current_time}` on each `build()` call. System prompt block is marked `cache_control: ephemeral`.
 
 ## Config
 
-`.env.example` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` and `DB_PATH`
-are currently consumed.
+`.env.example` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` and `DB_PATH` are currently consumed.
 
 ## Model
 
