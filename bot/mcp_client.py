@@ -45,9 +45,12 @@ async def mcp_client():
             tools = client.tools       # list[dict] for Anthropic API
             result = await client.call_tool("add_fact", {...})
     """
+    # cwd must be the project root so the server subprocess can resolve db.* imports.
+    _PROJECT_ROOT = Path(__file__).parent.parent
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[str(_TOOLS_SERVER)],
+        cwd=str(_PROJECT_ROOT),
     )
 
     async with stdio_client(server_params) as (read_stream, write_stream):

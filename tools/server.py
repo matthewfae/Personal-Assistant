@@ -12,6 +12,14 @@ This module is the boundary between MCP and the DB layer:
 
 import asyncio
 import sqlite3
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path so db.* imports resolve whether the
+# server is run directly or spawned as a subprocess by the MCP client.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import mcp.server.stdio
 import mcp.types as types
