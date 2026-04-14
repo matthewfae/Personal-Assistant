@@ -107,6 +107,7 @@ async def run_loop(
     mcp: MCPClient,
     conversation_id: str,
     user_message: str,
+    source: str = "test_harness",
 ) -> str:
     """
     Run the agent loop for one user turn.
@@ -115,6 +116,10 @@ async def run_loop(
     event to the DB, runs until Claude produces a final text response, and
     returns that response. Message history is projected from the events table
     at turn start and appended to locally during the turn.
+
+    Args:
+        source: The transport that delivered this message (e.g. "test_harness",
+            "telegram"). Recorded in the user_message event payload.
     """
     turn_id = str(uuid.uuid4())
 
@@ -123,7 +128,7 @@ async def run_loop(
         user_event_id = events_db.append(
             conn,
             "user_message",
-            {"v": 1, "text": user_message, "source": "test_harness"},
+            {"v": 1, "text": user_message, "source": source},
             turn_id=turn_id,
             conversation_id=conversation_id,
             parent_event_id=None,
