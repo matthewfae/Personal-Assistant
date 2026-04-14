@@ -4,6 +4,7 @@ Tools are discovered from the MCP server at startup rather than hardcoded here.
 Implements prompt caching for cost reduction on repeated context.
 """
 
+import uuid
 from typing import Any
 
 from anthropic import Anthropic
@@ -12,6 +13,9 @@ from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
 _prompt_builder = PromptBuilder()
+
+# One conversation_id per process start (stable for the process lifetime).
+conversation_id: str = uuid.uuid4().hex
 
 
 async def run_loop(
@@ -27,6 +31,9 @@ async def run_loop(
     Claude produces a final text response, and returns that response along
     with the updated message history.
     """
+    # Fresh turn_id for every run_loop call; all events in this turn share it.
+    turn_id: str = uuid.uuid4().hex
+
     messages = list(messages)
     messages.append({"role": "user", "content": user_message})
 
