@@ -11,6 +11,12 @@ This module is the boundary between MCP and the DB layer:
 """
 
 import asyncio
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path so that the db/ package is importable
+# when this script is run directly as a subprocess.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import mcp.server.stdio
 import mcp.types as types
