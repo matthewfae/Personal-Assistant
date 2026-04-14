@@ -4,11 +4,12 @@ Tools are discovered from the MCP server at startup rather than hardcoded here.
 Implements prompt caching for cost reduction on repeated context.
 """
 
+import json
 import uuid
-from typing import Any
 
 from anthropic import Anthropic
 
+from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
@@ -18,23 +19,47 @@ _prompt_builder = PromptBuilder()
 conversation_id: str = uuid.uuid4().hex
 
 
+def project_messages(conversation_id: str) -> list[dict]:
+    """Build the messages array from events for the given conversation."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT type, payload
+            FROM events
+            WHERE conversation_id = ?
+              AND type IN ('user_message', 'assistant_message')
+            ORDER BY timestamp ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
+
+    messages = []
+    for row in rows:
+        payload = json.loads(row["payload"])
+        if row["type"] == "user_message":
+            messages.append({"role": "user", "content": payload["content"]})
+        elif row["type"] == "assistant_message":
+            messages.append({"role": "assistant", "content": payload["content"]})
+    return messages
+
+
 async def run_loop(
     client: Anthropic,
     mcp: MCPClient,
-    messages: list[dict[str, Any]],
     user_message: str,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> str:
     """
     Run the agent loop for one user turn.
 
-    Takes the existing message history and a new user message, runs until
-    Claude produces a final text response, and returns that response along
-    with the updated message history.
+    Projects the message history from the events table, appends the new user
+    message, runs until Claude produces a final text response, and returns that
+    response. The in-memory message list is discarded at the end of the turn;
+    the next turn re-projects from the DB.
     """
     # Fresh turn_id for every run_loop call; all events in this turn share it.
     turn_id: str = uuid.uuid4().hex
 
-    messages = list(messages)
+    messages = project_messages(conversation_id)
     messages.append({"role": "user", "content": user_message})
 
     while True:
@@ -59,7 +84,7 @@ async def run_loop(
                 (block.text for block in response.content if block.type == "text"),
                 "",
             )
-            return final_text, messages
+            return final_text
 
         elif response.stop_reason == "tool_use":
             tool_results = []
@@ -76,4 +101,4 @@ async def run_loop(
             messages.append({"role": "user", "content": tool_results})
 
         else:
-            return f"Unexpected stop reason: {response.stop_reason}", messages
+            return f"Unexpected stop reason: {response.stop_reason}"

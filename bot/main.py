@@ -21,7 +21,6 @@ async def main():
         return
 
     client = Anthropic(api_key=api_key)
-    messages = []
 
     test_messages = [
         "Please remember that I like coffee.",
@@ -31,7 +30,7 @@ async def main():
     async with mcp_client() as mcp:
         for message in test_messages:
             print(f"\nUser: {message}")
-            response, messages = await run_loop(client, mcp, messages, message)
+            response = await run_loop(client, mcp, message)
             print(f"Assistant: {response}")
             print("-" * 60)
 
