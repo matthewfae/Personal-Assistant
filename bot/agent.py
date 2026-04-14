@@ -42,27 +42,80 @@ def _write_event(conn, turn_id, conversation_id, event_type, payload, parent_eve
 
 
 def project_messages(conversation_id: str, from_event_id: int = 0) -> list[dict]:
-    """Build the messages array from events for the given conversation."""
+    """Build the messages array from events for the given conversation.
+
+    Reconstructs the full interleaved sequence: user messages, tool use/result
+    pairs (grouped by api_call), and final assistant messages. context_decision
+    events are excluded — they are queried separately.
+    """
     with get_db() as conn:
         rows = conn.execute(
             """
-            SELECT type, payload
+            SELECT id, type, parent_event_id, payload
             FROM events
             WHERE conversation_id = ?
               AND id >= ?
-              AND type IN ('user_message', 'assistant_message')
+              AND type IN ('user_message', 'api_call', 'tool_call', 'tool_result', 'assistant_message')
             ORDER BY id ASC
             """,
             (conversation_id, from_event_id),
         ).fetchall()
 
-    messages = []
+    # Index for parent lookups (needed to map tool_result → tool_call → api_call).
+    event_by_id = {row["id"]: row for row in rows}
+
+    # Group tool_calls and tool_results under their parent api_call id.
+    tool_calls_by_api: dict[int, list] = {}
+    tool_results_by_api: dict[int, list] = {}
     for row in rows:
+        if row["type"] == "tool_call":
+            tool_calls_by_api.setdefault(row["parent_event_id"], []).append(row)
+        elif row["type"] == "tool_result":
+            tc = event_by_id.get(row["parent_event_id"])
+            if tc is not None:
+                tool_results_by_api.setdefault(tc["parent_event_id"], []).append(row)
+
+    messages: list[dict] = []
+    for row in rows:
+        etype = row["type"]
         payload = json.loads(row["payload"])
-        if row["type"] == "user_message":
+
+        if etype == "user_message":
             messages.append({"role": "user", "content": payload["content"]})
-        elif row["type"] == "assistant_message":
-            messages.append({"role": "assistant", "content": payload["content"]})
+
+        elif etype == "api_call":
+            tool_calls = tool_calls_by_api.get(row["id"], [])
+            if not tool_calls:
+                # No tool calls: either a meta-call or an end_turn api_call.
+                # The assistant_message event handles the end_turn case.
+                continue
+            messages.append({
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": json.loads(tc["payload"])["tool_use_id"],
+                        "name": json.loads(tc["payload"])["name"],
+                        "input": json.loads(tc["payload"])["input"],
+                    }
+                    for tc in tool_calls
+                ],
+            })
+            result_blocks = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": json.loads(tr["payload"])["tool_use_id"],
+                    "content": json.loads(tr["payload"])["content"],
+                }
+                for tr in tool_results_by_api.get(row["id"], [])
+            ]
+            if result_blocks:
+                messages.append({"role": "user", "content": result_blocks})
+
+        elif etype == "assistant_message":
+            if payload["content"]:
+                messages.append({"role": "assistant", "content": payload["content"]})
+
     return messages
 
 
