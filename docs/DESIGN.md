@@ -5,12 +5,13 @@
 bot/agent.py              Agent loop, event writing, projection, post-turn meta-call, causality tree debug
 bot/main.py               Test harness that sends scripted messages through the loop
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
-bot/prompt_builder.py     Loads prompts/system.md and injects dynamic context
+bot/prompt_builder.py     Loads prompt templates from prompts/, injects ambient context
 tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
 db/facts.py               CRUD for the facts table
-prompts/system.md         System prompt template with {current_time} placeholder
+prompts/system.md         System prompt template ({current_time} available)
+prompts/context_decision.md  Post-turn meta-call template ({events} required)
 ```
 
 ## Architecture
@@ -126,9 +127,13 @@ Events table is the source of truth. Conversation history is projected from even
 
 `debug_causality_tree(turn_id)` in `bot/agent.py` — queries all events for a turn, walks the parent→child tree, returns an indented text representation.
 
-## System Prompt
+## Prompt Templates
 
-`PromptBuilder` loads `prompts/system.md` at init and injects `{current_time}` on each `build()` call. System prompt block is marked `cache_control: ephemeral`.
+`PromptBuilder(template)` loads a named file from `prompts/` at init. `build(**kwargs)` injects ambient context (`current_time`) automatically and merges any caller-supplied kwargs. Templates declare their variables; callers pass only what is specific to their use case.
+
+Two instances in `agent.py`:
+- `_system_prompt` — renders `prompts/system.md`, used as the system block (marked `cache_control: ephemeral`).
+- `_context_decision_prompt` — renders `prompts/context_decision.md`, used for the post-turn meta-call (requires `events=` kwarg).
 
 ## Config
 
