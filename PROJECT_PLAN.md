@@ -52,21 +52,19 @@ Not a constraint. Everything runs synchronously. A lightweight "working…" Tele
 
 Start minimal. Add tools only when driven by concrete need. Target surface is **`add_fact` only** — reads come for free via events projection. Read/search tools are added only when context can no longer fit the relevant events.
 
-## Current Stage: Stage 3 — Events-Driven Rebuild
+## Completed: Stage 3 — Events-Driven Rebuild ✓
 
-**3a. Events schema.** Create the `events` table: `id`, `timestamp`, `turn_id`, `conversation_id`, `type`, `parent_event_id`, `payload` (JSON). Indexes on `(conversation_id, timestamp)`, `type`, `parent_event_id`. Append-only enforcement triggers. Event type taxonomy: `user_message`, `api_call`, `tool_call`, `tool_result`, `assistant_message`. Payload shapes at `v: 1`.
+**3a.** `events` table, indexes, append-only triggers. ✓
+**3b.** `turn_id` (per turn) and `conversation_id` (per process) generated and threaded through the loop. ✓
+**3c.** `project_messages()` builds the messages array from events at turn start. `run_loop` no longer takes or returns a messages list. ✓
+**3d.** Tools stripped to `add_fact` only. Agent loop writes all five event types. ✓
+**3e.** `parent_event_id` wired correctly for every event type. `debug_causality_tree()` added. ✓
 
-**3b. Turn lifecycle.** `turn_id` and `conversation_id` generation, threaded through the agent loop. Initial policy: one conversation per process start.
+## Current Stage: Stage 4 — Read/Search Tools
 
-**3c. Messages-as-projection.** Project events → `messages` array at turn start. Initial policy: chronological, current conversation, all message-like event types.
-
-**3d. Minimal tool rebuild.** Remove existing tools. Reintroduce `add_fact` as the only tool, writing event row + mutation_log + facts row in one transaction.
-
-**3e. Causality wiring.** `parent_event_id` set correctly for every event type. Add a debug query that walks a turn's causality tree.
+Add read/search tools only when driven by concrete need. The events projection currently serves all read requirements; tools are added only when context can no longer fit the relevant events.
 
 ## Upcoming Stages
-
-**Stage 4:** Add read/search tools only when driven by concrete need.
 
 **Stage 5:** Telegram bot — `python-telegram-bot` with long polling, sender allowlist, route messages through agent loop.
 

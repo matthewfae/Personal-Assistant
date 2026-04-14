@@ -6,7 +6,7 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Early. The agent loop, MCP tool plumbing, and an exploratory first-pass database layer are in place. An events-driven rebuild of the core architecture is the current focus. Telegram integration, monitoring, and hardening are deferred to later stages. See `PROJECT_PLAN.md` for the full stage breakdown and current focus.
+Stage 3 (events-driven rebuild) is complete. The agent loop writes every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at turn start. Stage 4 (read/search tools) is next. Telegram integration, monitoring, and hardening are deferred. See `PROJECT_PLAN.md` for the full stage breakdown.
 
 ## Repository layout
 
