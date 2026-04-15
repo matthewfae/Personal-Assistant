@@ -60,15 +60,21 @@ Start minimal. Add tools only when driven by concrete need. Target surface is **
 **3d.** Tools stripped to `add_fact` only. Agent loop writes all five event types. ✓
 **3e.** `parent_event_id` wired correctly for every event type. `debug_causality_tree()` added. ✓
 
-## Current Stage: Stage 4 — Dynamic Context Trimming
+## Completed: Stage 4 — Dynamic Context Trimming ✓
 
-**4a.** Post-turn meta-call: after `assistant_message` is written, a lightweight API call passes the full event list (id, type, timestamp, payload) for this conversation to Claude and asks for the `from_event_id` — the oldest event ID to include when projecting the next turn. Result stored as a `context_decision` event (`{"v": 1, "from_event_id": N}`). `project_messages` gains a `from_event_id` parameter; the meta-call updates a module-level `_from_event_id` used on every subsequent projection.
+**4a.** Post-turn meta-call: after `assistant_message` is written, a lightweight API call passes the full event list (id, type, timestamp, payload) for this conversation to Claude and asks for the `from_event_id` — the oldest event ID to include when projecting the next turn. Result stored as a `context_decision` event (`{"v": 1, "from_event_id": N}`). `project_messages` gains a `from_event_id` parameter; the meta-call updates a module-level `_from_event_id` used on every subsequent projection. ✓
+
+`project_messages` reconstructs the full interleaved tool use/result sequence, not just user and assistant text turns. ✓
+
+Meta-call failures (API errors, parse errors, invalid returned id) are caught and written as an `error` event (`{"v": 1, "context": "context_decision", "message": "..."}`) parented to `assistant_message`. `_from_event_id` is unchanged on failure. ✓
 
 Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
 
-## Upcoming Stages
+## Current Stage: Stage 5 — Telegram Bot
 
-**Stage 5:** Telegram bot — `python-telegram-bot` with long polling, sender allowlist, route messages through agent loop.
+**5a.** `python-telegram-bot` with long polling, sender allowlist, route messages through agent loop.
+
+## Upcoming Stages
 
 **Stage 6:** Monitoring — `systemd` service, structured logging, basic health checks.
 
@@ -76,4 +82,4 @@ Read/search tools remain deferred. They are added only when the bounded projecti
 
 ## Deferred Work
 
-- **Telegram "working…" ack on turn start.** Send a lightweight reply when a turn begins; record as an event. *Deferred until Stage 5.*
+- **Telegram "working…" ack on turn start.** Send a lightweight reply when a turn begins; record as an event. *Deferred until Stage 5a.*
