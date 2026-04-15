@@ -71,14 +71,12 @@ Read/search tools remain deferred. They are added only when the bounded projecti
 
 ## Current Stage: Stage 5 — Telegram Bot
 
-**5a.** `python-telegram-bot` with long polling, sender allowlist, route messages through agent loop.
+Each input channel gets its own handler. No shared channel abstraction — each transport is different enough that a common interface would be leaky. Handlers call `run_loop(user_message)` directly; no channel identity leaks into the agent.
+
+**5a.** `bot/telegram_handler.py` — `python-telegram-bot` with long polling, sender allowlist, wire to `run_loop`. Send a "working…" ack at turn start and record it as an event.
 
 ## Upcoming Stages
 
 **Stage 6:** Monitoring — `systemd` service, structured logging, basic health checks.
 
 **Stage 7:** Security hardening — secret management, DB access patterns, file permissions, rate limiting.
-
-## Deferred Work
-
-- **Telegram "working…" ack on turn start.** Send a lightweight reply when a turn begins; record as an event. *Deferred until Stage 5a.*
