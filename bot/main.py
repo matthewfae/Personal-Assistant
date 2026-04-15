@@ -32,7 +32,7 @@ async def main():
     client = Anthropic(api_key=api_key)
 
     test_messages = [
-        "Please remember that I like coffee.",
+        "Please add a note for me to get coffee.",
         "What's 2 + 2?",
     ]
 
