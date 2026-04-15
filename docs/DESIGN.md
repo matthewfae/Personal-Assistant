@@ -3,6 +3,7 @@
 ## Layout
 ```
 bot/agent.py              Agent loop, event writing, projection, post-turn meta-call, causality tree debug
+bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messages to run_loop
 bot/main.py               Test harness that sends scripted messages through the loop
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
 bot/prompt_builder.py     Loads prompt templates from prompts/, injects ambient context
@@ -84,6 +85,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `tool_result`       | `tool_use_id`, `content`                                 | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
 | `context_decision`  | `from_event_id`                                          | `api_call` (meta)   |
+| `telegram_ack`      | `telegram_message_id`                                    | None (turn root)    |
 | `error`             | `context`, `message`                                     | varies (see below)  |
 
 `context_decision` is excluded from `project_messages` projection. It is queried separately at turn start to determine the projection bound.
@@ -141,7 +143,7 @@ Two instances in `agent.py`:
 
 ## Config
 
-`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. Only `ANTHROPIC_API_KEY` and `DB_PATH` are currently consumed.
+`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. All four are consumed.
 
 ## Model
 
