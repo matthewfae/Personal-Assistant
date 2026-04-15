@@ -195,6 +195,7 @@ async def run_loop(
     client: Anthropic,
     mcp: MCPClient,
     user_message: str,
+    turn_id: str | None = None,
 ) -> str:
     """
     Run the agent loop for one user turn.
@@ -203,9 +204,13 @@ async def run_loop(
     message, runs until Claude produces a final text response, and returns that
     response. The in-memory message list is discarded at the end of the turn;
     the next turn re-projects from the DB.
+
+    turn_id may be supplied by the caller (e.g. a transport handler that has
+    already written a pre-turn event under the same id). If omitted, a fresh
+    UUID is generated.
     """
-    # Fresh turn_id for every run_loop call; all events in this turn share it.
-    turn_id: str = uuid.uuid4().hex
+    if turn_id is None:
+        turn_id = uuid.uuid4().hex
 
     from_event_id = _load_from_event_id()
     messages = project_messages(from_event_id)
