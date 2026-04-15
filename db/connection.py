@@ -62,14 +62,11 @@ CREATE TABLE IF NOT EXISTS events (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp        TEXT    NOT NULL,
     turn_id          TEXT    NOT NULL,
-    conversation_id  TEXT    NOT NULL,
     type             TEXT    NOT NULL,
     parent_event_id  INTEGER REFERENCES events(id),
     payload          TEXT    NOT NULL   -- JSON blob, always includes {"v": 1, ...}
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_conversation_timestamp
-    ON events(conversation_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type
     ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_parent
@@ -89,7 +86,16 @@ END;
 """
 
 
+def _migrate(conn) -> None:
+    """Apply schema migrations to existing databases."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+    if "conversation_id" in cols:
+        conn.execute("ALTER TABLE events DROP COLUMN conversation_id")
+        conn.execute("DROP INDEX IF EXISTS idx_events_conversation_timestamp")
+
+
 def init_db() -> None:
     """Create all tables and triggers if they don't exist. Safe to call on every startup."""
     with get_db() as conn:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
