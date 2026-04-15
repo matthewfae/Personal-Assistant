@@ -46,7 +46,7 @@ Each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tool
 
 **`connection.py`**
 - `get_db()` — context manager yielding a `sqlite3.Connection` (WAL mode, foreign keys on). Commits on clean exit, rolls back on exception.
-- `init_db()` — runs schema DDL. Safe to call on every startup.
+- `init_db()` — runs schema DDL and any pending migrations. Safe to call on every startup.
 
 **`mutation_log.py`**
 - `log(conn, table_name, operation, record_id, data)` — inserts one row into `mutation_log` on the caller's open connection.
@@ -121,7 +121,9 @@ All events carry correct `parent_event_id` (causality chain). In-memory message 
 
 ## State
 
-Events table is the source of truth. Conversation history is projected from events at each turn start. In-memory message list exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
+The events table is the source of truth — a flat, append-only log. There is no "conversation" concept: the only grouping unit is `turn_id`. The projection bound (`_from_event_id`) is Claude's working memory, managed entirely by the context decision mechanism.
+
+The messages array is projected from events at each turn start and discarded at turn end. In-memory state exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
 
 `_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the most recent `context_decision` event at each turn start and updated after the post-turn meta-call. Resets to `0` on process restart (all events re-projected until the first meta-call completes).
 
