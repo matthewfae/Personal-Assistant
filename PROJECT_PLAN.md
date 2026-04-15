@@ -31,7 +31,6 @@ Every meaningful thing that happens — incoming user message, outgoing assistan
 A **turn** is one cycle: `user_message_in → [api_call / tool_call / tool_result]* → assistant_message_out → optional post-turn cleanup`.
 
 - Every event in a turn shares a single `turn_id`.
-- Turns are grouped into conversations via `conversation_id`.
 - Post-turn cleanup runs synchronously inside the same turn, before the outgoing message is sent.
 
 ### Causality: `parent_event_id`
@@ -55,14 +54,14 @@ Start minimal. Add tools only when driven by concrete need. Target surface is **
 ## Completed: Stage 3 — Events-Driven Rebuild ✓
 
 **3a.** `events` table, indexes, append-only triggers. ✓
-**3b.** `turn_id` (per turn) and `conversation_id` (per process) generated and threaded through the loop. ✓
+**3b.** `turn_id` (per turn) generated and threaded through the loop. ✓
 **3c.** `project_messages()` builds the messages array from events at turn start. `run_loop` no longer takes or returns a messages list. ✓
 **3d.** Tools stripped to `add_fact` only. Agent loop writes all five event types. ✓
 **3e.** `parent_event_id` wired correctly for every event type. `debug_causality_tree()` added. ✓
 
 ## Completed: Stage 4 — Dynamic Context Trimming ✓
 
-**4a.** Post-turn meta-call: after `assistant_message` is written, a lightweight API call passes the full event list (id, type, timestamp, payload) for this conversation to Claude and asks for the `from_event_id` — the oldest event ID to include when projecting the next turn. Result stored as a `context_decision` event (`{"v": 1, "from_event_id": N}`). `project_messages` gains a `from_event_id` parameter; the meta-call updates a module-level `_from_event_id` used on every subsequent projection. ✓
+**4a.** Post-turn meta-call: after `assistant_message` is written, a lightweight API call passes the full event list (id, type, timestamp, payload) to Claude and asks for the `from_event_id` — the oldest event ID to include when projecting the next turn. Result stored as a `context_decision` event (`{"v": 1, "from_event_id": N}`). `project_messages` takes a `from_event_id` parameter; the meta-call updates a module-level `_from_event_id` used on every subsequent projection. ✓
 
 `project_messages` reconstructs the full interleaved tool use/result sequence, not just user and assistant text turns. ✓
 

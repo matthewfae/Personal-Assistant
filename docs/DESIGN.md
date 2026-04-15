@@ -65,9 +65,8 @@ facts (id, category, key, value, created_at, updated_at)
 
 mutation_log (id, table_name, operation, record_id, data_json, timestamp)
 
-events (id, timestamp, turn_id, conversation_id, type, parent_event_id, payload)
+events (id, timestamp, turn_id, type, parent_event_id, payload)
     parent_event_id REFERENCES events(id)
-    INDEX (conversation_id, timestamp)
     INDEX (type)
     INDEX (parent_event_id)
     TRIGGER: no UPDATE or DELETE (events are immutable)
@@ -100,13 +99,13 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 `main.py` calls `init_db()`, opens an `mcp_client()` context, then sends test messages through `run_loop`.
 
 `run_loop(client, mcp, user_message)`:
-1. Generates a fresh `turn_id` (UUID hex). `conversation_id` is module-level, stable for the process.
-2. Fetches the most recent `context_decision` event for this `conversation_id` to get `_from_event_id` (defaults to `0` if none exists).
-3. Calls `project_messages(conversation_id, from_event_id)` to build the initial messages list from the events table.
+1. Generates a fresh `turn_id` (UUID hex).
+2. Fetches the most recent `context_decision` event to get `_from_event_id` (defaults to `0` if none exists).
+3. Calls `project_messages(from_event_id)` to build the initial messages list from the events table.
 4. Appends the user message in memory and writes a `user_message` event to the DB.
 5. Calls Claude with the history, rendered system prompt, and tool list. Writes an `api_call` event.
 6. On `end_turn`: writes an `assistant_message` event.
-7. Post-turn meta-call: fetches all events for this `conversation_id` (id, type, timestamp, payload), validates the returned id against the fetched set, then writes an `api_call` event (parent: `assistant_message`) and a `context_decision` event (parent: meta `api_call`). Updates `_from_event_id`. Any failure (API error, non-integer response, unknown id) is caught and written as an `error` event (parent: `assistant_message`); `_from_event_id` is unchanged. Returns `final_text`.
+7. Post-turn meta-call: fetches all events (id, type, timestamp, payload), validates the returned id against the fetched set, then writes an `api_call` event (parent: `assistant_message`) and a `context_decision` event (parent: meta `api_call`). Updates `_from_event_id`. Any failure (API error, non-integer response, unknown id) is caught and written as an `error` event (parent: `assistant_message`); `_from_event_id` is unchanged. Returns `final_text`.
 8. On `tool_use`: writes a `tool_call` event, dispatches via `mcp.call_tool`, writes a `tool_result` event, then loops. Next `api_call`'s parent is the last `tool_result`.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
@@ -124,7 +123,7 @@ All events carry correct `parent_event_id` (causality chain). In-memory message 
 
 Events table is the source of truth. Conversation history is projected from events at each turn start. In-memory message list exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
 
-`_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the most recent `context_decision` event for this `conversation_id` at each turn start and updated after the post-turn meta-call. Resets to `0` on process restart (all events re-projected until the first meta-call completes).
+`_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the most recent `context_decision` event at each turn start and updated after the post-turn meta-call. Resets to `0` on process restart (all events re-projected until the first meta-call completes).
 
 ## Debug
 
