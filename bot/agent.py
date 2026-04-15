@@ -144,48 +144,62 @@ async def _run_context_decision(
     """Make a post-turn meta-call to determine the oldest event to keep next turn."""
     global _from_event_id
 
-    # Fetch ALL events for this conversation.
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, type, timestamp, payload FROM events "
-            "WHERE conversation_id = ? ORDER BY id ASC",
-            (conversation_id,),
-        ).fetchall()
+    try:
+        # Fetch ALL events for this conversation.
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, type, timestamp, payload FROM events "
+                "WHERE conversation_id = ? ORDER BY id ASC",
+                (conversation_id,),
+            ).fetchall()
 
-    # Format events as a plain-text list.
-    lines = []
-    for row in rows:
-        lines.append(
-            f"id={row['id']} type={row['type']} ts={row['timestamp']} payload={row['payload']}"
-        )
-    formatted_events = "\n".join(lines)
+        valid_event_ids = {row["id"] for row in rows}
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=16,
-        messages=[{"role": "user", "content": _context_decision_prompt.build(events=formatted_events)}],
-    )
+        # Format events as a plain-text list.
+        lines = []
+        for row in rows:
+            lines.append(
+                f"id={row['id']} type={row['type']} ts={row['timestamp']} payload={row['payload']}"
+            )
+        formatted_events = "\n".join(lines)
 
-    parsed_id = int(response.content[0].text.strip())
-
-    with get_db() as conn:
-        meta_api_call_id = _write_event(
-            conn, turn_id, conversation_id, "api_call",
-            {
-                "v": 1,
-                "model": "claude-haiku-4-5-20251001",
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
-            },
-            parent_event_id=assistant_message_id,
-        )
-        _write_event(
-            conn, turn_id, conversation_id, "context_decision",
-            {"v": 1, "from_event_id": parsed_id},
-            parent_event_id=meta_api_call_id,
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": _context_decision_prompt.build(events=formatted_events)}],
         )
 
-    _from_event_id = parsed_id
+        parsed_id = int(response.content[0].text.strip())
+
+        if parsed_id not in valid_event_ids:
+            raise ValueError(f"context_decision returned unknown event id {parsed_id}")
+
+        with get_db() as conn:
+            meta_api_call_id = _write_event(
+                conn, turn_id, conversation_id, "api_call",
+                {
+                    "v": 1,
+                    "model": "claude-haiku-4-5-20251001",
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                },
+                parent_event_id=assistant_message_id,
+            )
+            _write_event(
+                conn, turn_id, conversation_id, "context_decision",
+                {"v": 1, "from_event_id": parsed_id},
+                parent_event_id=meta_api_call_id,
+            )
+
+        _from_event_id = parsed_id
+
+    except Exception as e:
+        with get_db() as conn:
+            _write_event(
+                conn, turn_id, conversation_id, "error",
+                {"v": 1, "context": "context_decision", "message": str(e)},
+                parent_event_id=assistant_message_id,
+            )
 
 
 async def run_loop(
