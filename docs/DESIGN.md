@@ -85,8 +85,11 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `tool_result`       | `tool_use_id`, `content`                                 | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
 | `context_decision`  | `from_event_id`                                          | `api_call` (meta)   |
+| `error`             | `context`, `message`                                     | varies (see below)  |
 
 `context_decision` is excluded from `project_messages` projection. It is queried separately at turn start to determine the projection bound.
+
+`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (e.g. `"context_decision"`); `message` is the exception string. An `error` event written during `_run_context_decision` is parented to the `assistant_message` of that turn.
 
 ## Tools (current surface)
 
@@ -103,7 +106,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 4. Appends the user message in memory and writes a `user_message` event to the DB.
 5. Calls Claude with the history, rendered system prompt, and tool list. Writes an `api_call` event.
 6. On `end_turn`: writes an `assistant_message` event.
-7. Post-turn meta-call: fetches all events for this `conversation_id` (id, type, timestamp, payload), sends them to Claude with a short prompt asking for the oldest `from_event_id` to include next turn. Writes an `api_call` event (parent: `assistant_message`) and a `context_decision` event (parent: meta `api_call`). Updates `_from_event_id`. Returns `final_text`.
+7. Post-turn meta-call: fetches all events for this `conversation_id` (id, type, timestamp, payload), validates the returned id against the fetched set, then writes an `api_call` event (parent: `assistant_message`) and a `context_decision` event (parent: meta `api_call`). Updates `_from_event_id`. Any failure (API error, non-integer response, unknown id) is caught and written as an `error` event (parent: `assistant_message`); `_from_event_id` is unchanged. Returns `final_text`.
 8. On `tool_use`: writes a `tool_call` event, dispatches via `mcp.call_tool`, writes a `tool_result` event, then loops. Next `api_call`'s parent is the last `tool_result`.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
