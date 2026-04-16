@@ -28,10 +28,11 @@ Every meaningful thing that happens — incoming user message, outgoing assistan
 
 ### Turn Model
 
-A **turn** is one cycle: `user_message_in → [api_call / tool_call / tool_result]* → assistant_message_out → optional post-turn cleanup`.
+A **turn** is one cycle: `user_message_in → [api_call / tool_call / tool_result]* → assistant_message_out → reflection_step`.
 
 - Every event in a turn shares a single `turn_id`.
-- Post-turn cleanup runs synchronously inside the same turn, before the outgoing message is sent.
+- The main response uses text-on-`end_turn` — Claude's natural output mode. Wrapping message-sending in a tool was considered and rejected: it kills streaming, doubles API calls for the common one-message case, creates ambiguity about `end_turn` text, and puts transport errors inside the agent loop.
+- The **reflection step** is a post-turn mini agent loop. Claude reviews the completed turn with full tool access and may use tools (e.g., `set_context_bound`), produce a follow-up message, or signal `PASS` (nothing to add). See Stage 7.
 
 ### Causality: `parent_event_id`
 
@@ -49,7 +50,9 @@ Not a constraint. Everything runs synchronously. A lightweight "working…" Tele
 
 ### Tool Surface
 
-Start minimal. Add tools only when driven by concrete need. Target surface is **`add_fact` only** — reads come for free via events projection. Read/search tools are added only when context can no longer fit the relevant events.
+Start minimal. Add tools only when driven by concrete need. Current surface is **`add_fact`** — reads come for free via events projection. Read/search tools are added only when context can no longer fit the relevant events.
+
+`set_context_bound` is planned (Stage 7) — replaces the dedicated `context_decision` meta-call with a tool Claude calls during the reflection step.
 
 ## Completed: Stage 3 — Events-Driven Rebuild ✓
 
@@ -69,6 +72,8 @@ Meta-call failures (API errors, parse errors, invalid returned id) are caught an
 
 Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
 
+Note: The `context_decision` meta-call is superseded by the reflection step in Stage 7. The mechanism changes (dedicated meta-call → `set_context_bound` tool in a mini agent loop), but the goal is the same: bound the projection window.
+
 ## Completed: Stage 5 — Telegram Bot ✓
 
 Each input channel gets its own handler. No shared channel abstraction — each transport is different enough that a common interface would be leaky. Handlers call `run_loop(user_message)` directly; no channel identity leaks into the agent.
@@ -87,6 +92,20 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 **6c.** Basic health checks.
 
+## Upcoming: Stage 7 — Reflection Step
+
+Replaces the Stage 4 `context_decision` meta-call with a unified post-turn reflection step. After the main response (`assistant_message`), a mini agent loop runs where Claude can use tools and optionally send a follow-up message — absorbing context-trimming into the same step.
+
+**7a.** `set_context_bound(from_event_id)` tool — replaces the `context_decision` meta-call. Added to the MCP server tool surface. On call, persists the bound; `project_messages` reads it at next turn start.
+
+**7b.** Reflection step — after `assistant_message`, run a mini agent loop with the projected conversation context, a reflection-specific system prompt, and full tool access (including `set_context_bound`). If Claude's final text response is the sentinel `PASS`, no follow-up is sent. Any other text is delivered to the user as a follow-up message.
+
+**7c.** Remove `_run_context_decision()`, `prompts/context_decision.md`, and the `context_decision` event type. `project_messages` no longer needs to exclude `context_decision` events.
+
+**7d.** `run_loop` returns `TurnResult(reply: str, proactive: str | None)` instead of bare `str`. Telegram handler and harness updated to handle both fields.
+
+**7e.** System prompts — all prompts (main and reflection) describe the full architecture so Claude understands its role at each step.
+
 ## Upcoming Stages
 
-**Stage 7:** Security hardening — secret management, DB access patterns, file permissions, rate limiting.
+**Stage 8:** Security hardening — secret management, DB access patterns, file permissions, rate limiting.
