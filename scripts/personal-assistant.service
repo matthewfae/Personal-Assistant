@@ -1,0 +1,17 @@
+[Unit]
+Description=Personal Assistant Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=mattfae
+WorkingDirectory=/home/mattfae/Personal-Assistant
+EnvironmentFile=/home/mattfae/Personal-Assistant/.env
+ExecStart=/home/mattfae/.local/bin/uv run python bot/main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -4,7 +4,8 @@
 ```
 bot/agent.py              Agent loop, event writing, projection, post-turn meta-call, causality tree debug
 bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messages to run_loop
-bot/main.py               Test harness that sends scripted messages through the loop
+bot/main.py               Entry point: starts the Telegram bot
+bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
 bot/prompt_builder.py     Loads prompt templates from prompts/, injects ambient context
 tools/server.py           MCP server: tool schemas, routing, result formatting

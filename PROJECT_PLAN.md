@@ -69,14 +69,24 @@ Meta-call failures (API errors, parse errors, invalid returned id) are caught an
 
 Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
 
-## Current Stage: Stage 5 — Telegram Bot
+## Completed: Stage 5 — Telegram Bot ✓
 
 Each input channel gets its own handler. No shared channel abstraction — each transport is different enough that a common interface would be leaky. Handlers call `run_loop(user_message)` directly; no channel identity leaks into the agent.
 
-**5a.** `bot/telegram_handler.py` — `python-telegram-bot` with long polling, sender allowlist, wire to `run_loop`. Send a "working…" ack at turn start and record it as an event.
+**5a.** `bot/telegram_handler.py` — `python-telegram-bot` with long polling, sender allowlist, wire to `run_loop`. Send a "working…" ack at turn start and record it as an event. ✓
+
+`bot/main.py` promoted to true entry point; test harness moved to `bot/harness.py`. ✓
+
+DB migrations added to drop legacy `conversation_id` and `correlation_id` columns from the live DB. ✓
+
+## Current Stage: Stage 6 — Monitoring
+
+**6a.** `systemd` service — unit file at `scripts/personal-assistant.service`, installed and running. ✓
+
+**6b.** Structured logging — consistent log levels and format across all modules.
+
+**6c.** Basic health checks.
 
 ## Upcoming Stages
-
-**Stage 6:** Monitoring — `systemd` service, structured logging, basic health checks.
 
 **Stage 7:** Security hardening — secret management, DB access patterns, file permissions, rate limiting.

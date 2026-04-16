@@ -90,8 +90,11 @@ def _migrate(conn) -> None:
     """Apply schema migrations to existing databases."""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
     if "conversation_id" in cols:
-        conn.execute("ALTER TABLE events DROP COLUMN conversation_id")
+        conn.execute("DROP INDEX IF EXISTS idx_events_conv_ts")
         conn.execute("DROP INDEX IF EXISTS idx_events_conversation_timestamp")
+        conn.execute("ALTER TABLE events DROP COLUMN conversation_id")
+    if "correlation_id" in cols:
+        conn.execute("ALTER TABLE events DROP COLUMN correlation_id")
 
 
 def init_db() -> None:
