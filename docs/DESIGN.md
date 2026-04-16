@@ -82,6 +82,17 @@ events (id, timestamp, turn_id, type, parent_event_id, payload)
 context_bound (id CHECK (id = 1), from_event_id)
     Single-row table. Stores the current projection bound.
     Seeded with from_event_id = 0 on first init.
+
+tasks (id, area, summary, status, priority, estimated_hours, detail_json, created_at, updated_at)
+    status: TEXT NOT NULL DEFAULT 'open' — one of 'open', 'done', 'waiting', 'someday'
+    area: TEXT NOT NULL — loose grouping chosen by Claude (e.g. 'home', 'health', 'finances', 'system')
+    priority: INTEGER — nullable, lower = higher priority
+    estimated_hours: REAL — nullable, rough effort estimate
+    detail_json: TEXT — nullable JSON blob for freeform notes, sub-steps, context
+
+shopping (id, item, task_id, created_at)
+    item: TEXT NOT NULL — what to buy
+    task_id: INTEGER — nullable FK to tasks(id), links shopping items to their originating task
 ```
 
 Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v": 1, ...}`.
@@ -106,10 +117,28 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 |---|---|---|
 | `add_fact` | main turn + reflection | Store a key/value fact. Upserts on (category, key). |
 | `set_context_bound` | reflection only | Advance the projection bound. Hidden from main turn. |
+| `add_task` | main turn + reflection | Create a new task with area, summary, and optional priority/effort/detail. |
+| `update_task` | main turn + reflection | Update fields on an existing task (status, priority, detail, etc.). |
+| `list_tasks` | main turn + reflection | List tasks with compact output (id, area, summary, status, priority). Filterable by status, area. |
+| `get_task` | main turn + reflection | Get full detail for a single task by id. |
+| `add_shopping` | main turn + reflection | Add an item to the shopping list, with optional task_id link. |
+| `list_shopping` | main turn + reflection | Return the full shopping list (item names only). |
+| `remove_shopping` | main turn + reflection | Remove a shopping item by id. |
 
 `set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
 
-Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
+### Data Access Layer
+
+**`db/tasks.py`**
+- `add_task(area, summary, priority?, estimated_hours?, detail_json?, status?)` → dict
+- `update_task(task_id, **fields)` → dict
+- `get_task(task_id)` → dict or None
+- `list_tasks(status?, area?)` → list of compact dicts (id, area, summary, status, priority)
+
+**`db/shopping.py`**
+- `add_shopping(item, task_id?)` → dict
+- `list_shopping()` → list of item name strings
+- `remove_shopping(shopping_id)` → bool
 
 ## Agent Flow
 

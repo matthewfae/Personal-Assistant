@@ -91,6 +91,25 @@ CREATE TABLE IF NOT EXISTS context_bound (
     from_event_id INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO context_bound (id, from_event_id) VALUES (1, 0);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    area             TEXT    NOT NULL,
+    summary          TEXT    NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'open',
+    priority         INTEGER,
+    estimated_hours  REAL,
+    detail_json      TEXT,
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shopping (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    item       TEXT    NOT NULL,
+    task_id    INTEGER REFERENCES tasks(id),
+    created_at TEXT    NOT NULL
+);
 """
 
 
@@ -118,6 +137,31 @@ def _migrate(conn) -> None:
     indexes = {row[1] for row in conn.execute("PRAGMA index_list(events)").fetchall()}
     if "idx_events_turn_id" not in indexes:
         conn.execute("CREATE INDEX idx_events_turn_id ON events(turn_id)")
+
+    # Migrate: create tasks and shopping tables if they don't exist yet.
+    if "tasks" not in tables:
+        conn.execute(
+            "CREATE TABLE tasks ("
+            "    id               INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    area             TEXT    NOT NULL,"
+            "    summary          TEXT    NOT NULL,"
+            "    status           TEXT    NOT NULL DEFAULT 'open',"
+            "    priority         INTEGER,"
+            "    estimated_hours  REAL,"
+            "    detail_json      TEXT,"
+            "    created_at       TEXT    NOT NULL,"
+            "    updated_at       TEXT    NOT NULL"
+            ")"
+        )
+    if "shopping" not in tables:
+        conn.execute(
+            "CREATE TABLE shopping ("
+            "    id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    item       TEXT    NOT NULL,"
+            "    task_id    INTEGER REFERENCES tasks(id),"
+            "    created_at TEXT    NOT NULL"
+            ")"
+        )
 
 
 def init_db() -> None:
