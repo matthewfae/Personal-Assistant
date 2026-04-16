@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import anthropic
 from anthropic import Anthropic
 
 import db.context as context_db
@@ -213,6 +214,8 @@ async def _run_reflection(
             else:
                 return None
 
+    except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APITimeoutError):
+        raise
     except Exception as e:
         with get_db() as conn:
             write_event(

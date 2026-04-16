@@ -3,9 +3,12 @@ MCP client: spawns the tools server as a subprocess and provides a simple
 interface for the agent to list tools and dispatch tool calls.
 """
 
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -28,9 +31,13 @@ class MCPClient:
 
     async def call_tool(self, name: str, arguments: dict) -> str:
         result = await self._session.call_tool(name, arguments)
-        return "\n".join(
-            block.text for block in result.content if hasattr(block, "text")
-        )
+        parts = []
+        for block in result.content:
+            if hasattr(block, "text"):
+                parts.append(block.text)
+            else:
+                logger.warning("Ignoring non-text tool result block: type=%s", type(block).__name__)
+        return "\n".join(parts)
 
 
 @asynccontextmanager
