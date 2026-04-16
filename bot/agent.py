@@ -7,7 +7,7 @@ Implements prompt caching for cost reduction on repeated context.
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from anthropic import Anthropic
 
@@ -16,11 +16,10 @@ from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
+_MODEL = "claude-haiku-4-5-20251001"
+
 _system_prompt = PromptBuilder("system.md")
 _reflection_prompt = PromptBuilder("reflection.md")
-
-# Tracks the oldest event id to include when projecting messages next turn.
-_from_event_id: int = 0
 
 
 @dataclass
@@ -29,13 +28,13 @@ class TurnResult:
     proactive: str | None
 
 
-def _write_event(conn, turn_id, event_type, payload, parent_event_id=None) -> int:
+def write_event(conn, turn_id, event_type, payload, parent_event_id=None) -> int:
     """Insert one event row and return its id. conn must be an open sqlite3 connection."""
     cursor = conn.execute(
         "INSERT INTO events (timestamp, turn_id, type, parent_event_id, payload) "
         "VALUES (?, ?, ?, ?, ?)",
         (
-            datetime.utcnow().isoformat() + 'Z',
+            datetime.now(timezone.utc).isoformat(),
             turn_id,
             event_type,
             parent_event_id,
@@ -145,7 +144,7 @@ async def _run_reflection(
 
         while True:
             response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=_MODEL,
                 max_tokens=8192,
                 system=[
                     {
@@ -159,9 +158,9 @@ async def _run_reflection(
             )
 
             with get_db() as conn:
-                api_call_id = _write_event(conn, turn_id, "api_call", {
+                api_call_id = write_event(conn, turn_id, "api_call", {
                     "v": 1,
-                    "model": "claude-haiku-4-5-20251001",
+                    "model": _MODEL,
                     "input_tokens": response.usage.input_tokens,
                     "output_tokens": response.usage.output_tokens,
                 }, parent_event_id=next_api_call_parent_id)
@@ -176,7 +175,7 @@ async def _run_reflection(
                 if final_text.strip().upper() == "PASS":
                     return None
                 with get_db() as conn:
-                    _write_event(
+                    write_event(
                         conn, turn_id, "assistant_message",
                         {"v": 1, "content": final_text},
                         parent_event_id=api_call_id,
@@ -189,7 +188,7 @@ async def _run_reflection(
                 for block in response.content:
                     if block.type == "tool_use":
                         with get_db() as conn:
-                            tool_call_id = _write_event(conn, turn_id, "tool_call", {
+                            tool_call_id = write_event(conn, turn_id, "tool_call", {
                                 "v": 1,
                                 "tool_use_id": block.id,
                                 "name": block.name,
@@ -197,7 +196,7 @@ async def _run_reflection(
                             }, parent_event_id=api_call_id)
                         result = await mcp.call_tool(block.name, block.input)
                         with get_db() as conn:
-                            last_tool_result_id = _write_event(conn, turn_id, "tool_result", {
+                            last_tool_result_id = write_event(conn, turn_id, "tool_result", {
                                 "v": 1,
                                 "tool_use_id": block.id,
                                 "content": result,
@@ -216,7 +215,7 @@ async def _run_reflection(
 
     except Exception as e:
         with get_db() as conn:
-            _write_event(
+            write_event(
                 conn, turn_id, "error",
                 {"v": 1, "context": "reflection", "message": str(e)},
                 parent_event_id=assistant_message_id,
@@ -242,8 +241,6 @@ async def run_loop(
     already written a pre-turn event under the same id). If omitted, a fresh
     UUID is generated.
     """
-    global _from_event_id
-
     if turn_id is None:
         turn_id = uuid.uuid4().hex
 
@@ -252,7 +249,7 @@ async def run_loop(
     messages.append({"role": "user", "content": user_message})
 
     with get_db() as conn:
-        user_message_id = _write_event(
+        user_message_id = write_event(
             conn, turn_id, "user_message",
             {"v": 1, "content": user_message},
             parent_event_id=None,
@@ -270,7 +267,7 @@ async def run_loop(
 
     while True:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=_MODEL,
             max_tokens=8192,
             system=[
                 {
@@ -284,9 +281,9 @@ async def run_loop(
         )
 
         with get_db() as conn:
-            api_call_id = _write_event(conn, turn_id, "api_call", {
+            api_call_id = write_event(conn, turn_id, "api_call", {
                 "v": 1,
-                "model": "claude-haiku-4-5-20251001",
+                "model": _MODEL,
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
             }, parent_event_id=next_api_call_parent_id)
@@ -299,13 +296,12 @@ async def run_loop(
                 "",
             )
             with get_db() as conn:
-                assistant_message_event_id = _write_event(
+                assistant_message_event_id = write_event(
                     conn, turn_id, "assistant_message",
                     {"v": 1, "content": final_text},
                     parent_event_id=api_call_id,
                 )
             proactive_text = await _run_reflection(client, mcp, turn_id, assistant_message_event_id)
-            _from_event_id = _load_from_event_id()
             return TurnResult(reply=final_text, proactive=proactive_text)
 
         elif response.stop_reason == "tool_use":
@@ -314,7 +310,7 @@ async def run_loop(
             for block in response.content:
                 if block.type == "tool_use":
                     with get_db() as conn:
-                        tool_call_id = _write_event(conn, turn_id, "tool_call", {
+                        tool_call_id = write_event(conn, turn_id, "tool_call", {
                             "v": 1,
                             "tool_use_id": block.id,
                             "name": block.name,
@@ -322,7 +318,7 @@ async def run_loop(
                         }, parent_event_id=api_call_id)
                     result = await mcp.call_tool(block.name, block.input)
                     with get_db() as conn:
-                        last_tool_result_id = _write_event(conn, turn_id, "tool_result", {
+                        last_tool_result_id = write_event(conn, turn_id, "tool_result", {
                             "v": 1,
                             "tool_use_id": block.id,
                             "content": result,

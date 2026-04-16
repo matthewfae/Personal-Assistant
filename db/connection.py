@@ -71,6 +71,8 @@ CREATE INDEX IF NOT EXISTS idx_events_type
     ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_parent
     ON events(parent_event_id);
+CREATE INDEX IF NOT EXISTS idx_events_turn_id
+    ON events(turn_id);
 
 CREATE TRIGGER IF NOT EXISTS events_no_update
     BEFORE UPDATE ON events
@@ -112,6 +114,10 @@ def _migrate(conn) -> None:
             ")"
         )
         conn.execute("INSERT INTO context_bound (id, from_event_id) VALUES (1, 0)")
+
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list(events)").fetchall()}
+    if "idx_events_turn_id" not in indexes:
+        conn.execute("CREATE INDEX idx_events_turn_id ON events(turn_id)")
 
 
 def init_db() -> None:
