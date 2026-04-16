@@ -38,14 +38,14 @@ def add_shopping(item: str, task_id: int | None = None) -> dict:
         }
 
 
-def list_shopping() -> list[str]:
-    """Return just item name strings, ordered by created_at ASC."""
+def list_shopping() -> list[dict]:
+    """Return dicts with id and item, ordered by created_at ASC."""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT item FROM shopping ORDER BY created_at ASC"
+            "SELECT id, item FROM shopping ORDER BY created_at ASC"
         ).fetchall()
 
-    return [row["item"] for row in rows]
+    return [dict(row) for row in rows]
 
 
 def remove_shopping(shopping_id: int) -> bool:

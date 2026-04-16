@@ -110,12 +110,17 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_tasks",
-            description="List tasks, defaulting to all open tasks. Optionally filter by status and/or area.",
+            description=(
+                "List tasks. Defaults to all open tasks. "
+                "Pass status='all' to include every status. "
+                "Optionally filter by area or search summary text."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "status": {"type": "string", "description": "Filter by status (e.g. 'open', 'done')", "maxLength": 256},
+                    "status": {"type": "string", "description": "Filter by status ('open', 'done', 'waiting', 'someday', or 'all')", "maxLength": 256},
                     "area": {"type": "string", "description": "Filter by area", "maxLength": 256},
+                    "search": {"type": "string", "description": "Case-insensitive substring match on summary", "maxLength": 256},
                 },
             },
         ),
@@ -144,7 +149,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_shopping",
-            description="List all items on the shopping list.",
+            description="List all items on the shopping list. Returns id and item name for each entry.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -237,15 +242,22 @@ def _dispatch(name: str, arguments: dict) -> str:
             filters["status"] = arguments["status"][:256]
         if "area" in arguments:
             filters["area"] = arguments["area"][:256]
+        if "search" in arguments:
+            filters["search"] = arguments["search"][:256]
         rows = tasks_db.list_tasks(**filters)
         if not rows:
             return "No tasks found."
         lines = []
         for t in rows:
-            lines.append(
-                f"#{t['id']} [{t['area']}] {t['summary']} "
-                f"(status: {t['status']}, priority: {t['priority']})"
-            )
+            parts = [
+                f"#{t['id']} [{t['area']}] {t['summary']}",
+                f"status={t['status']}",
+                f"priority={t['priority']}",
+                f"est={t['estimated_hours']}h" if t["estimated_hours"] is not None else "est=none",
+            ]
+            if t["detail_json"]:
+                parts.append(f"detail={t['detail_json']}")
+            lines.append(" | ".join(parts))
         return "\n".join(lines)
 
     elif name == "get_task":
@@ -279,7 +291,7 @@ def _dispatch(name: str, arguments: dict) -> str:
         items = shopping_db.list_shopping()
         if not items:
             return "Shopping list is empty."
-        return "\n".join(items)
+        return "\n".join(f"#{i['id']} {i['item']}" for i in items)
 
     elif name == "remove_shopping":
         removed = shopping_db.remove_shopping(int(arguments["shopping_id"]))

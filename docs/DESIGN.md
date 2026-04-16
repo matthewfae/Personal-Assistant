@@ -119,10 +119,10 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `set_context_bound` | reflection only | Advance the projection bound. Hidden from main turn. |
 | `add_task` | main turn + reflection | Create a new task with area, summary, and optional priority/effort/detail. |
 | `update_task` | main turn + reflection | Update fields on an existing task (status, priority, detail, etc.). |
-| `list_tasks` | main turn + reflection | List tasks with compact output (id, area, summary, status, priority). Filterable by status, area. |
+| `list_tasks` | main turn + reflection | List tasks (all columns). Filterable by status, area, or summary text search. Pass status='all' for every status. |
 | `get_task` | main turn + reflection | Get full detail for a single task by id. |
 | `add_shopping` | main turn + reflection | Add an item to the shopping list, with optional task_id link. |
-| `list_shopping` | main turn + reflection | Return the full shopping list (item names only). |
+| `list_shopping` | main turn + reflection | Return the full shopping list (id and item name). |
 | `remove_shopping` | main turn + reflection | Remove a shopping item by id. |
 
 `set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
@@ -133,11 +133,11 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 - `add_task(area, summary, priority?, estimated_hours?, detail_json?, status?)` → dict
 - `update_task(task_id, **fields)` → dict
 - `get_task(task_id)` → dict or None
-- `list_tasks(status?, area?)` → list of compact dicts (id, area, summary, status, priority)
+- `list_tasks(status?, area?, search?)` → list of full dicts (all columns). `status='all'` skips status filter; `search` is a LIKE match on summary.
 
 **`db/shopping.py`**
 - `add_shopping(item, task_id?)` → dict
-- `list_shopping()` → list of item name strings
+- `list_shopping()` → list of `{id, item}` dicts
 - `remove_shopping(shopping_id)` → bool
 
 ## Agent Flow

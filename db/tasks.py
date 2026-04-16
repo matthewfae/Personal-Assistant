@@ -107,15 +107,18 @@ def get_task(task_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def list_tasks(status: str | None = None, area: str | None = None) -> list[dict]:
+def list_tasks(status: str | None = None, area: str | None = None, search: str | None = None) -> list[dict]:
     """
-    Return compact dicts: id, area, summary, status, priority.
-    Default: all open tasks. Order by priority ASC NULLS LAST, then created_at ASC.
+    Return all columns for matching tasks.
+    Default: all open tasks. Pass status='all' to include every status.
+    Order by priority ASC NULLS LAST, then created_at ASC.
     """
     clauses = []
     params: list = []
 
-    if status is not None:
+    if status == "all":
+        pass
+    elif status is not None:
         clauses.append("status = ?")
         params.append(status)
     else:
@@ -125,12 +128,16 @@ def list_tasks(status: str | None = None, area: str | None = None) -> list[dict]
         clauses.append("area = ?")
         params.append(area)
 
-    where = " AND ".join(clauses)
+    if search is not None:
+        clauses.append("summary LIKE ?")
+        params.append(f"%{search}%")
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, area, summary, status, priority"
-            f" FROM tasks WHERE {where}"
+            "SELECT id, area, summary, status, priority, estimated_hours, detail_json, created_at, updated_at"
+            f" FROM tasks {where}"
             " ORDER BY CASE WHEN priority IS NULL THEN 1 ELSE 0 END, priority ASC, created_at ASC",
             params,
         ).fetchall()
