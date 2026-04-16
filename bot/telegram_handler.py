@@ -34,6 +34,8 @@ from mcp_client import mcp_client
 
 load_dotenv()
 
+_REQUIRED_ENV_VARS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_ID", "ANTHROPIC_API_KEY"]
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -65,9 +67,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         result = await run_loop(client, mcp, user_message, turn_id=turn_id)
-    except Exception as e:
+    except Exception:
         logger.exception("run_loop raised an exception")
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text("Something went wrong. Please try again.")
         return
 
     await update.message.reply_text(result.reply)
@@ -76,6 +78,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def main() -> None:
+    missing = [v for v in _REQUIRED_ENV_VARS if not os.environ.get(v)]
+    if missing:
+        sys.exit(f"Missing required environment variables: {', '.join(missing)}")
+
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     allowed_user_id = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
     init_db()

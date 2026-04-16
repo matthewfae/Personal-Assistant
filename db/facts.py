@@ -8,10 +8,13 @@ A fact is identified by (category, key). Adding a fact that already exists
 under that pair updates it in place (upsert semantics).
 """
 
+import logging
 from datetime import datetime, timezone
 
 from db.connection import get_db
 from db import mutation_log
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:

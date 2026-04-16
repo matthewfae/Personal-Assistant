@@ -11,6 +11,7 @@ This module is the boundary between MCP and the DB layer:
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ import db.facts as facts_db
 import db.context as context_db
 import db.tasks as tasks_db
 import db.shopping as shopping_db
+
+logger = logging.getLogger(__name__)
 
 server = Server("personal-assistant-tools")
 
@@ -163,17 +166,27 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    result = _dispatch(name, arguments)
+    try:
+        result = _dispatch(name, arguments)
+    except Exception:
+        logger.exception("Unexpected error in tool %r with arguments %r", name, arguments)
+        raise
     return [types.TextContent(type="text", text=result)]
 
 
 def _dispatch(name: str, arguments: dict) -> str:
     """Route a tool call to the DB layer and format the result as a string."""
     if name == "add_fact":
+        key = arguments["key"].strip()[:256]
+        value = arguments["value"].strip()[:10000]
+        if not key:
+            return "Error: key cannot be empty."
+        if not value:
+            return "Error: value cannot be empty."
         fact = facts_db.add_fact(
-            key=arguments["key"][:256],
-            value=arguments["value"][:10000],
-            category=arguments.get("category", "general")[:64],
+            key=key,
+            value=value,
+            category=arguments.get("category", "general").strip()[:64] or "general",
         )
         verb = "Updated" if fact["operation"] == "updated" else "Stored"
         return f"{verb} fact [{fact['category']}] {fact['key']} = {fact['value']}"
@@ -183,10 +196,13 @@ def _dispatch(name: str, arguments: dict) -> str:
         return f"Context bound set to event id {arguments['from_event_id']}"
 
     elif name == "add_task":
-        kwargs: dict = {
-            "area": arguments["area"][:256],
-            "summary": arguments["summary"][:256],
-        }
+        area = arguments["area"].strip()[:256]
+        summary = arguments["summary"].strip()[:256]
+        if not area:
+            return "Error: area cannot be empty."
+        if not summary:
+            return "Error: summary cannot be empty."
+        kwargs: dict = {"area": area, "summary": summary}
         if "priority" in arguments:
             kwargs["priority"] = arguments["priority"]
         if "estimated_hours" in arguments:
@@ -202,7 +218,7 @@ def _dispatch(name: str, arguments: dict) -> str:
         kwargs = {}
         for field in ("area", "summary", "status"):
             if field in arguments:
-                kwargs[field] = arguments[field][:256]
+                kwargs[field] = arguments[field].strip()[:256]
         if "priority" in arguments:
             kwargs["priority"] = arguments["priority"]
         if "estimated_hours" in arguments:
@@ -250,7 +266,10 @@ def _dispatch(name: str, arguments: dict) -> str:
         return "\n".join(lines)
 
     elif name == "add_shopping":
-        kwargs = {"item": arguments["item"][:256]}
+        item_str = arguments["item"].strip()[:256]
+        if not item_str:
+            return "Error: item cannot be empty."
+        kwargs = {"item": item_str}
         if "task_id" in arguments:
             kwargs["task_id"] = arguments["task_id"]
         item = shopping_db.add_shopping(**kwargs)
