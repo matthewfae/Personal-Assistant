@@ -6,19 +6,27 @@ Implements prompt caching for cost reduction on repeated context.
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from anthropic import Anthropic
 
+import db.context as context_db
 from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
 _system_prompt = PromptBuilder("system.md")
-_context_decision_prompt = PromptBuilder("context_decision.md")
+_reflection_prompt = PromptBuilder("reflection.md")
 
 # Tracks the oldest event id to include when projecting messages next turn.
 _from_event_id: int = 0
+
+
+@dataclass
+class TurnResult:
+    reply: str
+    proactive: str | None
 
 
 def _write_event(conn, turn_id, event_type, payload, parent_event_id=None) -> int:
@@ -41,8 +49,7 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
     """Build the messages array from events at or after from_event_id.
 
     Reconstructs the full interleaved sequence: user messages, tool use/result
-    pairs (grouped by api_call), and final assistant messages. context_decision
-    events are excluded — they are queried separately.
+    pairs (grouped by api_call), and final assistant messages.
     """
     with get_db() as conn:
         rows = conn.execute(
@@ -115,80 +122,106 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
 
 
 def _load_from_event_id() -> int:
-    """Return the from_event_id from the most recent context_decision event, or 0."""
-    with get_db() as conn:
-        row = conn.execute(
-            """
-            SELECT payload FROM events
-            WHERE type = 'context_decision'
-            ORDER BY id DESC LIMIT 1
-            """,
-        ).fetchone()
-    if row is None:
-        return 0
-    return json.loads(row["payload"])["from_event_id"]
+    """Return the current context projection bound from the context_bound table."""
+    return context_db.get_context_bound()
 
 
-async def _run_context_decision(
+async def _run_reflection(
     client: Anthropic,
+    mcp: MCPClient,
     turn_id: str,
     assistant_message_id: int,
-) -> None:
-    """Make a post-turn meta-call to determine the oldest event to keep next turn."""
-    global _from_event_id
+) -> str | None:
+    """Run the reflection mini agent loop after a main turn completes.
 
+    May call tools (including set_context_bound) or send a follow-up message.
+    Returns the final assistant text if it is not PASS, otherwise returns None.
+    """
     try:
-        with get_db() as conn:
-            rows = conn.execute(
-                "SELECT id, type, timestamp, payload FROM events ORDER BY id ASC",
-            ).fetchall()
+        from_event_id = _load_from_event_id()
+        messages = project_messages(from_event_id)
 
-        valid_event_ids = {row["id"] for row in rows}
+        next_api_call_parent_id: int = assistant_message_id
 
-        lines = []
-        for row in rows:
-            lines.append(
-                f"id={row['id']} type={row['type']} ts={row['timestamp']} payload={row['payload']}"
+        while True:
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=8192,
+                system=[
+                    {
+                        "type": "text",
+                        "text": _reflection_prompt.build(),
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                tools=mcp.tools,
+                messages=messages,
             )
-        formatted_events = "\n".join(lines)
 
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=16,
-            messages=[{"role": "user", "content": _context_decision_prompt.build(events=formatted_events)}],
-        )
-
-        parsed_id = int(response.content[0].text.strip())
-
-        if parsed_id not in valid_event_ids:
-            raise ValueError(f"context_decision returned unknown event id {parsed_id}")
-
-        with get_db() as conn:
-            meta_api_call_id = _write_event(
-                conn, turn_id, "api_call",
-                {
+            with get_db() as conn:
+                api_call_id = _write_event(conn, turn_id, "api_call", {
                     "v": 1,
                     "model": "claude-haiku-4-5-20251001",
                     "input_tokens": response.usage.input_tokens,
                     "output_tokens": response.usage.output_tokens,
-                },
-                parent_event_id=assistant_message_id,
-            )
-            _write_event(
-                conn, turn_id, "context_decision",
-                {"v": 1, "from_event_id": parsed_id},
-                parent_event_id=meta_api_call_id,
-            )
+                }, parent_event_id=next_api_call_parent_id)
 
-        _from_event_id = parsed_id
+            messages.append({"role": "assistant", "content": response.content})
+
+            if response.stop_reason == "end_turn":
+                final_text = next(
+                    (block.text for block in response.content if block.type == "text"),
+                    "",
+                )
+                if final_text.strip().upper() == "PASS":
+                    return None
+                with get_db() as conn:
+                    _write_event(
+                        conn, turn_id, "assistant_message",
+                        {"v": 1, "content": final_text},
+                        parent_event_id=api_call_id,
+                    )
+                return final_text
+
+            elif response.stop_reason == "tool_use":
+                tool_results = []
+                last_tool_result_id: int | None = None
+                for block in response.content:
+                    if block.type == "tool_use":
+                        with get_db() as conn:
+                            tool_call_id = _write_event(conn, turn_id, "tool_call", {
+                                "v": 1,
+                                "tool_use_id": block.id,
+                                "name": block.name,
+                                "input": block.input,
+                            }, parent_event_id=api_call_id)
+                        result = await mcp.call_tool(block.name, block.input)
+                        with get_db() as conn:
+                            last_tool_result_id = _write_event(conn, turn_id, "tool_result", {
+                                "v": 1,
+                                "tool_use_id": block.id,
+                                "content": result,
+                            }, parent_event_id=tool_call_id)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+                messages.append({"role": "user", "content": tool_results})
+                if last_tool_result_id is not None:
+                    next_api_call_parent_id = last_tool_result_id
+
+            else:
+                return None
 
     except Exception as e:
         with get_db() as conn:
             _write_event(
                 conn, turn_id, "error",
-                {"v": 1, "context": "context_decision", "message": str(e)},
+                {"v": 1, "context": "reflection", "message": str(e)},
                 parent_event_id=assistant_message_id,
             )
+        return None
 
 
 async def run_loop(
@@ -196,19 +229,21 @@ async def run_loop(
     mcp: MCPClient,
     user_message: str,
     turn_id: str | None = None,
-) -> str:
+) -> TurnResult:
     """
     Run the agent loop for one user turn.
 
     Projects the message history from the events table, appends the new user
-    message, runs until Claude produces a final text response, and returns that
-    response. The in-memory message list is discarded at the end of the turn;
-    the next turn re-projects from the DB.
+    message, runs until Claude produces a final text response, then runs the
+    reflection step. Returns a TurnResult with the reply and optional proactive
+    follow-up text.
 
     turn_id may be supplied by the caller (e.g. a transport handler that has
     already written a pre-turn event under the same id). If omitted, a fresh
     UUID is generated.
     """
+    global _from_event_id
+
     if turn_id is None:
         turn_id = uuid.uuid4().hex
 
@@ -227,6 +262,12 @@ async def run_loop(
     # For subsequent api_calls, parent is the last tool_result written in the previous round.
     next_api_call_parent_id: int = user_message_id
 
+    # set_context_bound is a reflection-step tool; hide it from the main turn.
+    # Re-attach cache_control to the new last tool so caching is preserved.
+    main_tools = [t for t in mcp.tools if t["name"] != "set_context_bound"]
+    if main_tools and not main_tools[-1].get("cache_control"):
+        main_tools = [*main_tools[:-1], {**main_tools[-1], "cache_control": {"type": "ephemeral"}}]
+
     while True:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -238,7 +279,7 @@ async def run_loop(
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            tools=mcp.tools,
+            tools=main_tools,
             messages=messages,
         )
 
@@ -263,8 +304,9 @@ async def run_loop(
                     {"v": 1, "content": final_text},
                     parent_event_id=api_call_id,
                 )
-            await _run_context_decision(client, turn_id, assistant_message_event_id)
-            return final_text
+            proactive_text = await _run_reflection(client, mcp, turn_id, assistant_message_event_id)
+            _from_event_id = _load_from_event_id()
+            return TurnResult(reply=final_text, proactive=proactive_text)
 
         elif response.stop_reason == "tool_use":
             tool_results = []
@@ -298,7 +340,7 @@ async def run_loop(
                 next_api_call_parent_id = last_tool_result_id
 
         else:
-            return f"Unexpected stop reason: {response.stop_reason}"
+            return TurnResult(reply=f"Unexpected stop reason: {response.stop_reason}", proactive=None)
 
 
 def debug_causality_tree(turn_id: str) -> str:

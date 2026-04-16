@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from agent import run_loop
+from agent import run_loop, TurnResult
 from db.connection import get_db, init_db
 from mcp_client import mcp_client
 
@@ -76,13 +76,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     mcp = context.bot_data["mcp"]
 
     try:
-        response_text = await run_loop(client, mcp, user_message, turn_id=turn_id)
+        result = await run_loop(client, mcp, user_message, turn_id=turn_id)
     except Exception as e:
         logger.exception("run_loop raised an exception")
         await update.message.reply_text(f"Error: {e}")
         return
 
-    await update.message.reply_text(response_text)
+    await update.message.reply_text(result.reply)
+    if result.proactive:
+        await update.message.reply_text(result.proactive)
 
 
 async def main() -> None:

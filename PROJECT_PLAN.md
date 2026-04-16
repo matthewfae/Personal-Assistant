@@ -84,7 +84,7 @@ Each input channel gets its own handler. No shared channel abstraction — each 
 
 DB migrations added to drop legacy `conversation_id` and `correlation_id` columns from the live DB. ✓
 
-## Current Stage: Stage 6 — Monitoring
+## Completed: Stage 6 — Monitoring (partial) ✓
 
 **6a.** `systemd` service — unit file at `scripts/personal-assistant.service`, installed and running. ✓
 
@@ -92,20 +92,20 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 **6c.** Basic health checks.
 
-## Upcoming: Stage 7 — Reflection Step
+## Completed: Stage 7 — Reflection Step ✓
 
-Replaces the Stage 4 `context_decision` meta-call with a unified post-turn reflection step. After the main response (`assistant_message`), a mini agent loop runs where Claude can use tools and optionally send a follow-up message — absorbing context-trimming into the same step.
+Replaced the Stage 4 `context_decision` meta-call with a unified post-turn reflection step. After the main response, a mini agent loop runs where Claude can trim context, store facts, or send a follow-up message.
 
-**7a.** `set_context_bound(from_event_id)` tool — replaces the `context_decision` meta-call. Added to the MCP server tool surface. On call, persists the bound; `project_messages` reads it at next turn start.
+**7a.** `set_context_bound(from_event_id)` tool — persists the projection bound to a single-row `context_bound` table. Added to the MCP server. Hidden from the main turn; available only in the reflection step. ✓
 
-**7b.** Reflection step — after `assistant_message`, run a mini agent loop with the projected conversation context, a reflection-specific system prompt, and full tool access (including `set_context_bound`). If Claude's final text response is the sentinel `PASS`, no follow-up is sent. Any other text is delivered to the user as a follow-up message.
+**7b.** Reflection step (`_run_reflection`) — mini agent loop after `assistant_message`. Full tool access. `PASS` response suppresses the follow-up; any other text is delivered to the user. Failures written as `error` events. ✓
 
-**7c.** Remove `_run_context_decision()`, `prompts/context_decision.md`, and the `context_decision` event type. `project_messages` no longer needs to exclude `context_decision` events.
+**7c.** Removed `_run_context_decision()`, `prompts/context_decision.md`, and the `context_decision` event type. `_load_from_event_id()` now reads from `context_bound` table. ✓
 
-**7d.** `run_loop` returns `TurnResult(reply: str, proactive: str | None)` instead of bare `str`. Telegram handler and harness updated to handle both fields.
+**7d.** `run_loop` returns `TurnResult(reply: str, proactive: str | None)`. Telegram handler and harness updated. ✓
 
-**7e.** System prompts — all prompts (main and reflection) describe the full architecture so Claude understands its role at each step.
+**7e.** Both system prompts describe the full architecture so Claude understands its role at each step. Main turn prompt is focused on responding; reflection prompt explains the event/projection/bound system in detail. ✓
 
-## Upcoming Stages
+## Current Stage: Stage 8 — Security Hardening
 
-**Stage 8:** Security hardening — secret management, DB access patterns, file permissions, rate limiting.
+Secret management, DB access patterns, file permissions, rate limiting.

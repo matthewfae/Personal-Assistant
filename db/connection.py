@@ -83,6 +83,12 @@ CREATE TRIGGER IF NOT EXISTS events_no_delete
 BEGIN
     SELECT RAISE(FAIL, 'events are immutable');
 END;
+
+CREATE TABLE IF NOT EXISTS context_bound (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    from_event_id INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO context_bound (id, from_event_id) VALUES (1, 0);
 """
 
 
@@ -95,6 +101,17 @@ def _migrate(conn) -> None:
         conn.execute("ALTER TABLE events DROP COLUMN conversation_id")
     if "correlation_id" in cols:
         conn.execute("ALTER TABLE events DROP COLUMN correlation_id")
+
+    # Migrate: create context_bound table if it doesn't exist yet.
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "context_bound" not in tables:
+        conn.execute(
+            "CREATE TABLE context_bound ("
+            "    id           INTEGER PRIMARY KEY CHECK (id = 1),"
+            "    from_event_id INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        conn.execute("INSERT INTO context_bound (id, from_event_id) VALUES (1, 0)")
 
 
 def init_db() -> None:

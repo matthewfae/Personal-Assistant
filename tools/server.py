@@ -24,6 +24,7 @@ from mcp.server.lowlevel.server import Server
 
 from db.connection import init_db
 import db.facts as facts_db
+import db.context as context_db
 
 server = Server("personal-assistant-tools")
 
@@ -50,6 +51,24 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["key", "value"],
             },
         ),
+        types.Tool(
+            name="set_context_bound",
+            description=(
+                "Set the context projection bound. The next turn will only include events "
+                "with id >= from_event_id when building the conversation history. "
+                "Choose aggressively — exclude anything no longer needed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "from_event_id": {
+                        "type": "integer",
+                        "description": "ID of the oldest event to include in future projections",
+                    },
+                },
+                "required": ["from_event_id"],
+            },
+        ),
     ]
 
 
@@ -69,6 +88,10 @@ def _dispatch(name: str, arguments: dict) -> str:
         )
         verb = "Updated" if fact["operation"] == "updated" else "Stored"
         return f"{verb} fact [{fact['category']}] {fact['key']} = {fact['value']}"
+
+    elif name == "set_context_bound":
+        context_db.set_context_bound(int(arguments["from_event_id"]))
+        return f"Context bound set to event id {arguments['from_event_id']}"
 
     raise ValueError(f"Unknown tool: {name}")
 

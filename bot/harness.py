@@ -37,8 +37,10 @@ async def main():
     async with mcp_client() as mcp:
         for message in test_messages:
             print(f"\nUser: {message}")
-            response = await run_loop(client, mcp, message)
-            print(f"Assistant: {response}")
+            result = await run_loop(client, mcp, message)
+            print(f"Assistant: {result.reply}")
+            if result.proactive:
+                print(f"Proactive: {result.proactive}")
             print("-" * 60)
 
 

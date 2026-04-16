@@ -2,7 +2,7 @@
 
 ## Layout
 ```
-bot/agent.py              Agent loop, event writing, projection, post-turn meta-call, causality tree debug
+bot/agent.py              Agent loop, event writing, projection, reflection step, causality tree debug
 bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messages to run_loop
 bot/main.py               Entry point: starts the Telegram bot
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
@@ -12,8 +12,9 @@ tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
 db/facts.py               CRUD for the facts table
-prompts/system.md         System prompt template ({current_time} available)
-prompts/context_decision.md  Post-turn meta-call template ({events} required)
+db/context.py             Read/write the context projection bound (context_bound table)
+prompts/system.md         Main turn system prompt ({current_time} available)
+prompts/reflection.md     Reflection step system prompt ({current_time} available)
 ```
 
 ## Architecture
@@ -26,6 +27,7 @@ MCP / Claude
 tools/server.py       ← MCP boundary: tool schemas, dispatch, string formatting
     │
 db/facts.py           ← Data access: returns plain dicts, no MCP types
+db/context.py         ← Read/write the context projection bound
     │
 db/connection.py      ← Connection management, schema DDL
 db/mutation_log.py    ← Audit writer (called within the same transaction as each write)
@@ -59,6 +61,10 @@ Each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tool
 - `search_facts(query, category?)` → list of dicts (LIKE match on key/value)
 - `list_facts(category?, limit)` → list of dicts, newest first
 
+**`context.py`**
+- `get_context_bound()` → int — reads `from_event_id` from the single-row `context_bound` table (default `0`).
+- `set_context_bound(from_event_id)` — validates the id exists in `events`, then upserts into `context_bound`. Raises `ValueError` for unknown ids.
+
 ## Schema
 
 ```sql
@@ -72,6 +78,10 @@ events (id, timestamp, turn_id, type, parent_event_id, payload)
     INDEX (type)
     INDEX (parent_event_id)
     TRIGGER: no UPDATE or DELETE (events are immutable)
+
+context_bound (id CHECK (id = 1), from_event_id)
+    Single-row table. Stores the current projection bound.
+    Seeded with from_event_id = 0 on first init.
 ```
 
 Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v": 1, ...}`.
@@ -81,35 +91,50 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | type                | payload fields (beyond `v`)                              | parent              |
 |---------------------|----------------------------------------------------------|---------------------|
 | `user_message`      | `content`                                                | None (turn root)    |
-| `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` or `assistant_message` (meta-call) |
+| `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
 | `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
 | `tool_result`       | `tool_use_id`, `content`                                 | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
-| `context_decision`  | `from_event_id`                                          | `api_call` (meta)   |
 | `telegram_ack`      | `telegram_message_id`                                    | None (turn root)    |
-| `error`             | `context`, `message`                                     | varies (see below)  |
+| `error`             | `context`, `message`                                     | `assistant_message` |
 
-`context_decision` is excluded from `project_messages` projection. It is queried separately at turn start to determine the projection bound.
+`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (e.g. `"reflection"`); `message` is the exception string.
 
-`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (e.g. `"context_decision"`); `message` is the exception string. An `error` event written during `_run_context_decision` is parented to the `assistant_message` of that turn.
+## Tools
 
-## Tools (current surface)
+| tool | available in | description |
+|---|---|---|
+| `add_fact` | main turn + reflection | Store a key/value fact. Upserts on (category, key). |
+| `set_context_bound` | reflection only | Advance the projection bound. Hidden from main turn. |
 
-`add_fact` only — backed by `db/facts.py`. Read/search tools added only when events projection can no longer serve the relevant context.
+`set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
+
+Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
 
 ## Agent Flow
 
-`main.py` calls `init_db()`, opens an `mcp_client()` context, then sends test messages through `run_loop`.
+`run_loop(client, mcp, user_message)` → `TurnResult(reply, proactive)`:
 
-`run_loop(client, mcp, user_message)`:
 1. Generates a fresh `turn_id` (UUID hex).
-2. Fetches the most recent `context_decision` event to get `_from_event_id` (defaults to `0` if none exists).
-3. Calls `project_messages(from_event_id)` to build the initial messages list from the events table.
-4. Appends the user message in memory and writes a `user_message` event to the DB.
-5. Calls Claude with the history, rendered system prompt, and tool list. Writes an `api_call` event.
-6. On `end_turn`: writes an `assistant_message` event.
-7. Post-turn meta-call: fetches all events (id, type, timestamp, payload), validates the returned id against the fetched set, then writes an `api_call` event (parent: `assistant_message`) and a `context_decision` event (parent: meta `api_call`). Updates `_from_event_id`. Any failure (API error, non-integer response, unknown id) is caught and written as an `error` event (parent: `assistant_message`); `_from_event_id` is unchanged. Returns `final_text`.
-8. On `tool_use`: writes a `tool_call` event, dispatches via `mcp.call_tool`, writes a `tool_result` event, then loops. Next `api_call`'s parent is the last `tool_result`.
+2. Calls `_load_from_event_id()` (reads `context_bound` table) to get the projection bound.
+3. Calls `project_messages(from_event_id)` to build the initial messages list.
+4. Appends the user message in memory and writes a `user_message` event.
+5. Filters `mcp.tools` to exclude `set_context_bound` for the main turn.
+6. Loops (main turn):
+   - Calls Claude with the history, system prompt (`cache_control: ephemeral`), and filtered tool list. Writes an `api_call` event.
+   - On `end_turn`: writes an `assistant_message` event, then calls `_run_reflection()`.
+   - On `tool_use`: writes `tool_call` and `tool_result` events, appends results to messages, loops.
+7. After reflection, reloads `_from_event_id` from the DB.
+8. Returns `TurnResult(reply=final_text, proactive=proactive_text)`.
+
+`_run_reflection(client, mcp, turn_id, assistant_message_id)` → `str | None`:
+
+Runs as a mini agent loop after the main turn:
+1. Re-projects messages from the DB (now includes the just-written `assistant_message`).
+2. Loops with the full tool list (including `set_context_bound`) and the reflection system prompt (`cache_control: ephemeral`).
+3. On `end_turn`: if final text is `PASS` (case-insensitive), returns `None` without writing an event. Otherwise writes an `assistant_message` event and returns the text.
+4. On `tool_use`: writes `tool_call` and `tool_result` events, loops.
+5. Any exception is caught, written as an `error` event (parented to `assistant_message_id`), and returns `None`.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
 
@@ -124,11 +149,11 @@ All events carry correct `parent_event_id` (causality chain). In-memory message 
 
 ## State
 
-The events table is the source of truth — a flat, append-only log. There is no "conversation" concept: the only grouping unit is `turn_id`. The projection bound (`_from_event_id`) is Claude's working memory, managed entirely by the context decision mechanism.
+The events table is the source of truth — a flat, append-only log. There is no "conversation" concept: the only grouping unit is `turn_id`. The projection bound is Claude's working memory, managed by the `set_context_bound` tool during the reflection step.
 
 The messages array is projected from events at each turn start and discarded at turn end. In-memory state exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
 
-`_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the most recent `context_decision` event at each turn start and updated after the post-turn meta-call. Resets to `0` on process restart (all events re-projected until the first meta-call completes).
+`_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the `context_bound` table at each turn start and reloaded after the reflection step completes. Resets to `0` on process restart (all events re-projected until the first `set_context_bound` call).
 
 ## Debug
 
@@ -136,11 +161,11 @@ The messages array is projected from events at each turn start and discarded at 
 
 ## Prompt Templates
 
-`PromptBuilder(template)` loads a named file from `prompts/` at init. `build(**kwargs)` injects ambient context (`current_time`) automatically and merges any caller-supplied kwargs. Templates declare their variables; callers pass only what is specific to their use case.
+`PromptBuilder(template)` loads a named file from `prompts/` at init. `build(**kwargs)` injects ambient context (`current_time`) automatically and merges any caller-supplied kwargs.
 
 Two instances in `agent.py`:
-- `_system_prompt` — renders `prompts/system.md`, used as the system block (marked `cache_control: ephemeral`).
-- `_context_decision_prompt` — renders `prompts/context_decision.md`, used for the post-turn meta-call (requires `events=` kwarg).
+- `_system_prompt` — renders `prompts/system.md`, used as the system block in the main turn (marked `cache_control: ephemeral`).
+- `_reflection_prompt` — renders `prompts/reflection.md`, used as the system block in the reflection step (marked `cache_control: ephemeral`).
 
 ## Config
 
