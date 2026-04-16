@@ -17,7 +17,7 @@ from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = "claude-sonnet-4-6"
 
 _system_prompt = PromptBuilder("system.md")
 _reflection_prompt = PromptBuilder("reflection.md")
