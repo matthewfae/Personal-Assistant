@@ -5,13 +5,14 @@ PromptBuilder injects ambient context (current_time) automatically.
 Callers pass template-specific variables as kwargs to build().
 """
 
+import os
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-_TZ = ZoneInfo("America/Chicago")
+_TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 
 
 class PromptBuilder:

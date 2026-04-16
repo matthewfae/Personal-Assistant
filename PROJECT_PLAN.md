@@ -109,3 +109,25 @@ Replaced the Stage 4 `context_decision` meta-call with a unified post-turn refle
 ## Current Stage: Stage 8 — Security Hardening
 
 Secret management, DB access patterns, file permissions, rate limiting.
+
+## Deferred Work
+
+### Unit Tests
+Full automated test coverage for the core agent layer. Priority areas:
+- `project_messages()` — event projection logic, edge cases (empty log, trimmed bound, orphaned tool results)
+- `_run_reflection()` — PASS handling, tool call path, error event writing, exception propagation
+- `run_loop()` — end_turn path, tool_use loop, unexpected stop_reason
+- `db/` layer — facts CRUD, upsert semantics, context_bound read/write, migration idempotency
+- `mcp_client.py` — tool list formatting, cache_control attachment, call_tool dispatch
+
+### Structured Logging in agent.py
+Add `logging` calls throughout `agent.py` and `mcp_client.py`:
+- API call start/end with token counts
+- Tool dispatch (name, truncated input)
+- Reflection step outcome (PASS vs. follow-up vs. error)
+- Context bound changes
+
+### Rate Limiting
+Protect against rapid Telegram message bursts exhausting API credits:
+- Per-turn debounce or simple in-flight lock so only one turn runs at a time
+- Backpressure signal to user if a turn is already running

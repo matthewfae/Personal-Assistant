@@ -41,11 +41,12 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string", "description": "Name of the fact"},
-                    "value": {"type": "string", "description": "Value to store"},
+                    "key": {"type": "string", "description": "Name of the fact", "maxLength": 256},
+                    "value": {"type": "string", "description": "Value to store", "maxLength": 10000},
                     "category": {
                         "type": "string",
                         "description": "Grouping label (default: 'general')",
+                        "maxLength": 64,
                     },
                 },
                 "required": ["key", "value"],
@@ -82,9 +83,9 @@ def _dispatch(name: str, arguments: dict) -> str:
     """Route a tool call to the DB layer and format the result as a string."""
     if name == "add_fact":
         fact = facts_db.add_fact(
-            key=arguments["key"],
-            value=arguments["value"],
-            category=arguments.get("category", "general"),
+            key=arguments["key"][:256],
+            value=arguments["value"][:10000],
+            category=arguments.get("category", "general")[:64],
         )
         verb = "Updated" if fact["operation"] == "updated" else "Stored"
         return f"{verb} fact [{fact['category']}] {fact['key']} = {fact['value']}"

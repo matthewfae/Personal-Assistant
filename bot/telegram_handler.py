@@ -49,7 +49,7 @@ def _write_ack_event(turn_id: str, telegram_message_id: int) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle an incoming Telegram text message."""
-    allowed_id = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
+    allowed_id = context.bot_data["allowed_user_id"]
     if update.effective_user.id != allowed_id:
         logger.warning("Rejected message from user_id=%s", update.effective_user.id)
         return
@@ -77,6 +77,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def main() -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
+    allowed_user_id = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
     init_db()
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -86,6 +87,7 @@ async def main() -> None:
     async with mcp_client() as mcp:
         app.bot_data["client"] = client
         app.bot_data["mcp"] = mcp
+        app.bot_data["allowed_user_id"] = allowed_user_id
 
         async with app:
             await app.start()
