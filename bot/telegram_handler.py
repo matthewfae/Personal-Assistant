@@ -14,13 +14,11 @@ For each accepted message:
 """
 
 import asyncio
-import json
 import logging
 import os
 import signal
 import sys
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -30,7 +28,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from agent import run_loop, TurnResult
+from agent import run_loop, TurnResult, write_event
 from db.connection import get_db, init_db
 from mcp_client import mcp_client
 
@@ -46,17 +44,7 @@ logger = logging.getLogger(__name__)
 def _write_ack_event(turn_id: str, telegram_message_id: int) -> None:
     """Record the outgoing 'working…' ack as a telegram_ack event."""
     with get_db() as conn:
-        conn.execute(
-            "INSERT INTO events (timestamp, turn_id, type, parent_event_id, payload) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                datetime.utcnow().isoformat() + "Z",
-                turn_id,
-                "telegram_ack",
-                None,
-                json.dumps({"v": 1, "telegram_message_id": telegram_message_id}),
-            ),
-        )
+        write_event(conn, turn_id, "telegram_ack", {"v": 1, "telegram_message_id": telegram_message_id})
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
