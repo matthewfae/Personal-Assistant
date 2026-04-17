@@ -151,7 +151,7 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Run a read-only SELECT query against the database. "
                 "Use this for any lookup that the specific list/get tools don't cover: "
-                "joins, aggregates, filtering events, inspecting facts, mutation_log, etc. "
+                "joins, aggregates, date filtering, cross-table queries, etc. "
                 "Only SELECT is allowed. Results are capped at 200 rows."
             ),
             inputSchema={

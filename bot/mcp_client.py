@@ -50,7 +50,7 @@ async def mcp_client():
     Usage:
         async with mcp_client() as client:
             tools = client.tools       # list[dict] for Anthropic API
-            result = await client.call_tool("add_fact", {...})
+            result = await client.call_tool("add_task", {...})
     """
     server_params = StdioServerParameters(
         command=sys.executable,

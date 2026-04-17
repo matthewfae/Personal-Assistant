@@ -39,16 +39,6 @@ def get_db():
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS facts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    category    TEXT    NOT NULL DEFAULT 'general',
-    key         TEXT    NOT NULL,
-    value       TEXT    NOT NULL,
-    created_at  TEXT    NOT NULL,
-    updated_at  TEXT    NOT NULL,
-    UNIQUE(category, key)
-);
-
 CREATE TABLE IF NOT EXISTS mutation_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     table_name  TEXT    NOT NULL,

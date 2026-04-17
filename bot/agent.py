@@ -352,7 +352,7 @@ def debug_causality_tree(turn_id: str) -> str:
 
         user_message (id=1)
           api_call (id=2, in=120, out=45)
-            tool_call (id=3, name=add_fact)
+            tool_call (id=3, name=add_task)
               tool_result (id=4)
             api_call (id=5, in=200, out=80)
               assistant_message (id=6)
