@@ -202,4 +202,4 @@ Two instances in `agent.py`:
 
 ## Model
 
-`claude-haiku-4-5-20251001` with `max_tokens=8192`.
+Configured in `bot/agent.py`. `max_tokens=8192`.

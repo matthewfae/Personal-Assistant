@@ -31,4 +31,4 @@ logs/        Runtime log output
 - Python 3.11+, managed with `uv`
 - `anthropic`, `mcp`, `python-telegram-bot`, `python-dotenv`
 - `sqlite3` from stdlib
-- Target model: `claude-haiku-4-5-20251001`
+- Target model: configured in `bot/agent.py`

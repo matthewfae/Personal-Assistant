@@ -6,7 +6,7 @@ Python Telegram bot that routes user messages through the Claude API with access
 ## Core Architecture Decisions
 
 ### Foundational
-- **Model:** `claude-haiku-4-5-20251001`
+- **Model:** Configured in `bot/agent.py`. Expected to change as better models are released.
 - **Prompt caching:** Applied to system prompt and tool list.
 - **Tool architecture:** MCP server/client split. Tools live in `tools/server.py`; the bot is an MCP client.
 - **DB access:** Curated tool functions only, not raw SQL.
