@@ -24,7 +24,6 @@ import mcp.types as types
 from mcp.server.lowlevel.server import Server
 
 from db.connection import init_db
-import db.facts as facts_db
 import db.context as context_db
 import db.tasks as tasks_db
 import db.shopping as shopping_db
@@ -38,26 +37,6 @@ server = Server("personal-assistant-tools")
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
-        types.Tool(
-            name="add_fact",
-            description=(
-                "Store a fact. If the (category, key) pair already exists, "
-                "the value is updated in place."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "key": {"type": "string", "description": "Name of the fact", "maxLength": 256},
-                    "value": {"type": "string", "description": "Value to store", "maxLength": 10000},
-                    "category": {
-                        "type": "string",
-                        "description": "Grouping label (default: 'general')",
-                        "maxLength": 64,
-                    },
-                },
-                "required": ["key", "value"],
-            },
-        ),
         types.Tool(
             name="set_context_bound",
             description=(
@@ -201,22 +180,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 def _dispatch(name: str, arguments: dict) -> str:
     """Route a tool call to the DB layer and format the result as a string."""
-    if name == "add_fact":
-        key = arguments["key"].strip()[:256]
-        value = arguments["value"].strip()[:10000]
-        if not key:
-            return "Error: key cannot be empty."
-        if not value:
-            return "Error: value cannot be empty."
-        fact = facts_db.add_fact(
-            key=key,
-            value=value,
-            category=arguments.get("category", "general").strip()[:64] or "general",
-        )
-        verb = "Updated" if fact["operation"] == "updated" else "Stored"
-        return f"{verb} fact [{fact['category']}] {fact['key']} = {fact['value']}"
-
-    elif name == "set_context_bound":
+    if name == "set_context_bound":
         context_db.set_context_bound(int(arguments["from_event_id"]))
         return f"Context bound set to event id {arguments['from_event_id']}"
 
