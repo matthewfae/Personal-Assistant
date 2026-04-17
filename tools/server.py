@@ -28,6 +28,7 @@ import db.facts as facts_db
 import db.context as context_db
 import db.tasks as tasks_db
 import db.shopping as shopping_db
+import db.query as query_db
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,25 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["shopping_id"],
             },
         ),
+        types.Tool(
+            name="query_db",
+            description=(
+                "Run a read-only SELECT query against the database. "
+                "Use this for any lookup that the specific list/get tools don't cover: "
+                "joins, aggregates, filtering events, inspecting facts, mutation_log, etc. "
+                "Only SELECT is allowed. Results are capped at 200 rows."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": "A valid SQLite SELECT statement.",
+                    },
+                },
+                "required": ["sql"],
+            },
+        ),
     ]
 
 
@@ -298,6 +318,21 @@ def _dispatch(name: str, arguments: dict) -> str:
         if removed:
             return "Removed from shopping list."
         return "Item not found."
+
+    elif name == "query_db":
+        sql = arguments["sql"].strip()
+        try:
+            rows = query_db.run_query(sql)
+        except ValueError as e:
+            return f"Error: {e}"
+        if not rows:
+            return "Query returned no rows."
+        headers = list(rows[0].keys())
+        lines = [" | ".join(headers)]
+        lines.append("-" * len(lines[0]))
+        for row in rows:
+            lines.append(" | ".join("" if v is None else str(v) for v in row.values()))
+        return "\n".join(lines)
 
     raise ValueError(f"Unknown tool: {name}")
 
