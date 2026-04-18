@@ -1,7 +1,7 @@
 """
 Mutation log writer.
 
-Called by db/facts.py after every write. Takes an open connection so
+Called by db/ writers after every mutation. Takes an open connection so
 the log entry is part of the same transaction as the mutation.
 """
 

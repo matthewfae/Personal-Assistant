@@ -39,16 +39,6 @@ def get_db():
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS facts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    category    TEXT    NOT NULL DEFAULT 'general',
-    key         TEXT    NOT NULL,
-    value       TEXT    NOT NULL,
-    created_at  TEXT    NOT NULL,
-    updated_at  TEXT    NOT NULL,
-    UNIQUE(category, key)
-);
-
 CREATE TABLE IF NOT EXISTS mutation_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     table_name  TEXT    NOT NULL,
@@ -115,6 +105,13 @@ CREATE TABLE IF NOT EXISTS shopping (
 
 def _migrate(conn) -> None:
     """Apply schema migrations to existing databases."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+    # Drop legacy facts table.
+    if "facts" in tables:
+        conn.execute("DROP TABLE facts")
+        tables.discard("facts")
+
     cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
     if "conversation_id" in cols:
         conn.execute("DROP INDEX IF EXISTS idx_events_conv_ts")
@@ -124,7 +121,6 @@ def _migrate(conn) -> None:
         conn.execute("ALTER TABLE events DROP COLUMN correlation_id")
 
     # Migrate: create context_bound table if it doesn't exist yet.
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "context_bound" not in tables:
         conn.execute(
             "CREATE TABLE context_bound ("
