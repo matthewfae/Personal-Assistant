@@ -94,7 +94,7 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 ## Completed: Stage 7 — Reflection Step ✓
 
-Replaced the Stage 4 `context_decision` meta-call with a unified post-turn reflection step. After the main response, a mini agent loop runs where Claude can trim context, store facts, or send a follow-up message.
+Replaced the Stage 4 `context_decision` meta-call with a unified post-turn reflection step. After the main response, a mini agent loop runs where Claude can trim context, call tools, or send a follow-up message.
 
 **7a.** `set_context_bound(from_event_id)` tool — persists the projection bound to a single-row `context_bound` table. Added to the MCP server. Hidden from the main turn; available only in the reflection step. ✓
 
@@ -171,7 +171,7 @@ Full automated test coverage for the core agent layer. Priority areas:
 - `project_messages()` — event projection logic, edge cases (empty log, trimmed bound, orphaned tool results)
 - `_run_reflection()` — PASS handling, tool call path, error event writing, exception propagation
 - `run_loop()` — end_turn path, tool_use loop, unexpected stop_reason
-- `db/` layer — facts CRUD, upsert semantics, context_bound read/write, migration idempotency
+- `db/` layer — tasks/shopping CRUD, context_bound read/write, migration idempotency
 - `mcp_client.py` — tool list formatting, cache_control attachment, call_tool dispatch
 
 ### Structured Logging in agent.py

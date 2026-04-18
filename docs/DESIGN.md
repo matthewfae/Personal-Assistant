@@ -11,7 +11,6 @@ bot/prompt_builder.py     Loads prompt templates from prompts/, injects ambient 
 tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
-db/facts.py               CRUD for the facts table
 db/context.py             Read/write the context projection bound (context_bound table)
 prompts/system.md         Main turn system prompt ({current_time} available)
 prompts/reflection.md     Reflection step system prompt ({current_time} available)
@@ -26,7 +25,6 @@ MCP / Claude
     │
 tools/server.py       ← MCP boundary: tool schemas, dispatch, string formatting
     │
-db/facts.py           ← Data access: returns plain dicts, no MCP types
 db/context.py         ← Read/write the context projection bound
     │
 db/connection.py      ← Connection management, schema DDL
@@ -55,12 +53,6 @@ Each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tool
 **`mutation_log.py`**
 - `log(conn, table_name, operation, record_id, data)` — inserts one row into `mutation_log` on the caller's open connection.
 
-**`facts.py`**
-- `add_fact(key, value, category)` → dict with `operation: 'inserted' | 'updated'`
-- `get_fact(key, category)` → dict or None
-- `search_facts(query, category?)` → list of dicts (LIKE match on key/value)
-- `list_facts(category?, limit)` → list of dicts, newest first
-
 **`context.py`**
 - `get_context_bound()` → int — reads `from_event_id` from the single-row `context_bound` table (default `0`).
 - `set_context_bound(from_event_id)` — validates the id exists in `events`, then upserts into `context_bound`. Raises `ValueError` for unknown ids.
@@ -68,9 +60,6 @@ Each layer only imports downward. `db/` has no knowledge of MCP or Claude. `tool
 ## Schema
 
 ```sql
-facts (id, category, key, value, created_at, updated_at)
-    UNIQUE(category, key)
-
 mutation_log (id, table_name, operation, record_id, data_json, timestamp)
 
 events (id, timestamp, turn_id, type, parent_event_id, payload)
@@ -115,7 +104,6 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 
 | tool | available in | description |
 |---|---|---|
-| `add_fact` | main turn + reflection | Store a key/value fact. Upserts on (category, key). |
 | `set_context_bound` | reflection only | Advance the projection bound. Hidden from main turn. |
 | `add_task` | main turn + reflection | Create a new task with area, summary, and optional priority/effort/detail. |
 | `update_task` | main turn + reflection | Update fields on an existing task (status, priority, detail, etc.). |
@@ -124,10 +112,14 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `add_shopping` | main turn + reflection | Add an item to the shopping list, with optional task_id link. |
 | `list_shopping` | main turn + reflection | Return the full shopping list (id and item name). |
 | `remove_shopping` | main turn + reflection | Remove a shopping item by id. |
+| `query` | main turn + reflection | Run an arbitrary read-only SELECT against any table (tasks, shopping, events). Returns up to 200 rows. |
 
 `set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
 
 ### Data Access Layer
+
+**`db/query.py`**
+- `run_query(sql)` → list of dicts — executes a read-only SELECT (max 200 rows). Raises `ValueError` for non-SELECT statements or queries containing semicolons.
 
 **`db/tasks.py`**
 - `add_task(area, summary, priority?, estimated_hours?, detail_json?, status?)` → dict

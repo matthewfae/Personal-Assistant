@@ -140,6 +140,10 @@ async def _run_reflection(
     try:
         from_event_id = _load_from_event_id()
         messages = project_messages(from_event_id)
+        # The projection ends with the assistant_message from the main turn.
+        # The API requires the last message to be a user turn, so append a
+        # synthetic trigger. This message is not written as an event.
+        messages.append({"role": "user", "content": "(reflection)"})
 
         next_api_call_parent_id: int = assistant_message_id
 
