@@ -104,7 +104,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 
 | tool | available in | description |
 |---|---|---|
-| `set_context_bound` | reflection only | Advance the projection bound. Hidden from main turn. |
+| `set_context_bound` | reflection only | Advance the projection bound. Requires a `rationale` field. Hidden from main turn. |
 | `add_task` | main turn + reflection | Create a new task with area, summary, and optional priority/effort/detail. |
 | `update_task` | main turn + reflection | Update fields on an existing task (status, priority, detail, etc.). |
 | `list_tasks` | main turn + reflection | List tasks (all columns). Filterable by status, area, or summary text search. Pass status='all' for every status. |

@@ -42,7 +42,8 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Set the context projection bound. The next turn will only include events "
                 "with id >= from_event_id when building the conversation history. "
-                "Choose aggressively — exclude anything no longer needed."
+                "Choose aggressively — exclude anything no longer needed. "
+                "Always include a brief rationale explaining what you're trimming and why."
             ),
             inputSchema={
                 "type": "object",
@@ -51,8 +52,13 @@ async def list_tools() -> list[types.Tool]:
                         "type": "integer",
                         "description": "ID of the oldest event to include in future projections",
                     },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Brief explanation of what is being trimmed and why it's no longer needed",
+                        "maxLength": 500,
+                    },
                 },
-                "required": ["from_event_id"],
+                "required": ["from_event_id", "rationale"],
             },
         ),
         types.Tool(
