@@ -82,7 +82,16 @@ tasks (id, area, summary, status, priority, estimated_hours, detail_json, create
 shopping (id, item, task_id, created_at)
     item: TEXT NOT NULL — what to buy
     task_id: INTEGER — nullable FK to tasks(id), links shopping items to their originating task
+
+symptoms (id, symptom, severity, occurred_at, notes, logged_at)
+    symptom: TEXT NOT NULL — name/description of the symptom
+    severity: INTEGER — nullable, 1–10 scale
+    occurred_at: TEXT NOT NULL — ISO-8601 UTC, when the symptom happened (user-reported time)
+    notes: TEXT — nullable freeform context
+    logged_at: TEXT NOT NULL — ISO-8601 UTC, when the entry was recorded
 ```
+
+Two timestamps distinguish *when it happened* from *when it was logged* — the user may report a symptom that occurred hours or days earlier.
 
 Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v": 1, ...}`.
 
@@ -112,9 +121,16 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `add_shopping` | main turn + reflection | Add an item to the shopping list, with optional task_id link. |
 | `list_shopping` | main turn + reflection | Return the full shopping list (id and item name). |
 | `remove_shopping` | main turn + reflection | Remove a shopping item by id. |
-| `query` | main turn + reflection | Run an arbitrary read-only SELECT against any table (tasks, shopping, events). Returns up to 200 rows. |
+| `log_symptom` | main turn + reflection | Record a symptom. `occurred_at` defaults to now; `severity` is 1–10. |
+| `update_symptom` | main turn + reflection | Correct or annotate a logged symptom. |
+| `list_symptoms` | main turn + reflection | List symptoms, most recent first. Filter by name (substring) or `since` (ISO-8601 bound). Default limit 100. |
+| `get_symptom` | main turn + reflection | Full detail for one symptom log by id. |
+| `delete_symptom` | main turn + reflection | Delete a symptom log (use when logged in error). |
+| `query` | main turn + reflection | Run an arbitrary read-only SELECT against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
 
 `set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
+
+The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom, severity, occurred_at, notes, logged_at)`, `events`, and `mutation_log`.
 
 ### Data Access Layer
 
@@ -131,6 +147,13 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 - `add_shopping(item, task_id?)` → dict
 - `list_shopping()` → list of `{id, item}` dicts
 - `remove_shopping(shopping_id)` → bool
+
+**`db/symptoms.py`**
+- `log_symptom(symptom, severity?, occurred_at?, notes?)` → dict
+- `update_symptom(symptom_id, **fields)` → dict
+- `get_symptom(symptom_id)` → dict or None
+- `list_symptoms(symptom?, since?, limit?)` → list of full dicts, ordered occurred_at DESC
+- `delete_symptom(symptom_id)` → bool
 
 ## Agent Flow
 

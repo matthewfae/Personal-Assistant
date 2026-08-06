@@ -100,6 +100,15 @@ CREATE TABLE IF NOT EXISTS shopping (
     task_id    INTEGER REFERENCES tasks(id),
     created_at TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS symptoms (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    symptom     TEXT    NOT NULL,
+    severity    INTEGER,
+    occurred_at TEXT    NOT NULL,
+    notes       TEXT,
+    logged_at   TEXT    NOT NULL
+);
 """
 
 
@@ -156,6 +165,18 @@ def _migrate(conn) -> None:
             "    item       TEXT    NOT NULL,"
             "    task_id    INTEGER REFERENCES tasks(id),"
             "    created_at TEXT    NOT NULL"
+            ")"
+        )
+
+    if "symptoms" not in tables:
+        conn.execute(
+            "CREATE TABLE symptoms ("
+            "    id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    symptom     TEXT    NOT NULL,"
+            "    severity    INTEGER,"
+            "    occurred_at TEXT    NOT NULL,"
+            "    notes       TEXT,"
+            "    logged_at   TEXT    NOT NULL"
             ")"
         )
 

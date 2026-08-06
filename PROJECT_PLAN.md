@@ -160,6 +160,20 @@ shopping (id, item, task_id, created_at)
 
 Prompt updates and security hardening are deferred to subsequent stages.
 
+## Completed: Stage 8b — Symptoms Tracking ✓
+
+New `symptoms` table for logging medical symptom occurrences with severity and timestamps.
+
+*(Task: "Add medical symptoms tracking table/feature to Claude assistant app" — done.)*
+
+**Design notes:**
+- Two timestamps: `occurred_at` (when the symptom happened, user-reported) and `logged_at` (when it was recorded). This handles the common case of reporting a symptom after the fact.
+- Severity is a nullable 1–10 integer.
+- Claude is the query/analysis engine — use `list_symptoms` for recent history, `query` for aggregations ("headaches per week").
+- `delete_symptom` rather than status lifecycle — a symptom either happened or it didn't. Corrections are updates; "logged in error" is deletion.
+
+**8b tools:** `log_symptom`, `update_symptom`, `list_symptoms`, `get_symptom`, `delete_symptom`.
+
 ## Stage 9 (Future) — Security Hardening
 
 Secret management, DB access patterns, file permissions, rate limiting.

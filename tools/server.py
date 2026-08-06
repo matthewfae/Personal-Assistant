@@ -28,6 +28,7 @@ import db.context as context_db
 import db.tasks as tasks_db
 import db.shopping as shopping_db
 import db.query as query_db
+import db.symptoms as symptoms_db
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ async def list_tools() -> list[types.Tool]:
                 "Tables: "
                 "tasks (id, area, summary, status, priority, estimated_hours, detail_json, created_at, updated_at), "
                 "shopping (id, item, task_id, created_at), "
+                "symptoms (id, symptom, severity, occurred_at, notes, logged_at), "
                 "events (id, timestamp, turn_id, type, parent_event_id, payload). "
                 "JOINs, aggregations, ORDER BY, and WHERE clauses are all supported."
             ),
@@ -172,6 +174,76 @@ async def list_tools() -> list[types.Tool]:
                     },
                 },
                 "required": ["sql"],
+            },
+        ),
+        types.Tool(
+            name="log_symptom",
+            description=(
+                "Record a symptom occurrence. Use occurred_at to capture when the symptom happened "
+                "(ISO-8601 UTC string) — defaults to now if omitted. Severity is 1–10."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symptom": {"type": "string", "description": "Name or description of the symptom", "maxLength": 256},
+                    "severity": {"type": "integer", "description": "Severity on a 1–10 scale", "minimum": 1, "maximum": 10},
+                    "occurred_at": {"type": "string", "description": "ISO-8601 UTC timestamp of when the symptom occurred (defaults to now)"},
+                    "notes": {"type": "string", "description": "Optional freeform context or detail", "maxLength": 2000},
+                },
+                "required": ["symptom"],
+            },
+        ),
+        types.Tool(
+            name="update_symptom",
+            description="Correct or add notes to a previously logged symptom.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symptom_id": {"type": "integer", "description": "ID of the symptom log to update"},
+                    "symptom": {"type": "string", "description": "Corrected symptom name", "maxLength": 256},
+                    "severity": {"type": "integer", "description": "Corrected severity (1–10)", "minimum": 1, "maximum": 10},
+                    "occurred_at": {"type": "string", "description": "Corrected ISO-8601 UTC occurrence timestamp"},
+                    "notes": {"type": "string", "description": "Updated notes", "maxLength": 2000},
+                },
+                "required": ["symptom_id"],
+            },
+        ),
+        types.Tool(
+            name="list_symptoms",
+            description=(
+                "List logged symptoms, most recent first. "
+                "Optionally filter by symptom name (substring match) or since a date. "
+                "Defaults to last 100 entries."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symptom": {"type": "string", "description": "Case-insensitive substring match on symptom name", "maxLength": 256},
+                    "since": {"type": "string", "description": "ISO-8601 UTC timestamp — only return symptoms occurring on or after this time"},
+                    "limit": {"type": "integer", "description": "Max results (default 100)", "minimum": 1, "maximum": 500},
+                },
+            },
+        ),
+        types.Tool(
+            name="get_symptom",
+            description="Get full details of a single symptom log by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symptom_id": {"type": "integer", "description": "ID of the symptom log to retrieve"},
+                },
+                "required": ["symptom_id"],
+            },
+        ),
+        types.Tool(
+            name="delete_symptom",
+            description="Delete a symptom log by ID (use when logged in error).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symptom_id": {"type": "integer", "description": "ID of the symptom log to delete"},
+                },
+                "required": ["symptom_id"],
             },
         ),
     ]
@@ -304,6 +376,77 @@ def _dispatch(name: str, arguments: dict) -> str:
         for row in rows:
             lines.append("\t".join(str(v) if v is not None else "NULL" for v in row.values()))
         return "\n".join(lines)
+
+    elif name == "log_symptom":
+        symptom_str = arguments["symptom"].strip()[:256]
+        if not symptom_str:
+            return "Error: symptom cannot be empty."
+        kwargs: dict = {"symptom": symptom_str}
+        if "severity" in arguments:
+            kwargs["severity"] = int(arguments["severity"])
+        if "occurred_at" in arguments:
+            kwargs["occurred_at"] = arguments["occurred_at"]
+        if "notes" in arguments:
+            kwargs["notes"] = arguments["notes"][:2000]
+        s = symptoms_db.log_symptom(**kwargs)
+        sev = f"severity={s['severity']}" if s["severity"] is not None else "severity=none"
+        return f"Logged symptom #{s['id']}: {s['symptom']} ({sev}, at {s['occurred_at'][:16]})"
+
+    elif name == "update_symptom":
+        kwargs = {}
+        if "symptom" in arguments:
+            kwargs["symptom"] = arguments["symptom"].strip()[:256]
+        if "severity" in arguments:
+            kwargs["severity"] = int(arguments["severity"])
+        if "occurred_at" in arguments:
+            kwargs["occurred_at"] = arguments["occurred_at"]
+        if "notes" in arguments:
+            kwargs["notes"] = arguments["notes"][:2000]
+        try:
+            s = symptoms_db.update_symptom(int(arguments["symptom_id"]), **kwargs)
+        except ValueError as e:
+            return str(e)
+        return f"Updated symptom #{s['id']}: {s['symptom']}"
+
+    elif name == "list_symptoms":
+        filters: dict = {}
+        if "symptom" in arguments:
+            filters["symptom"] = arguments["symptom"][:256]
+        if "since" in arguments:
+            filters["since"] = arguments["since"]
+        if "limit" in arguments:
+            filters["limit"] = min(int(arguments["limit"]), 500)
+        rows = symptoms_db.list_symptoms(**filters)
+        if not rows:
+            return "No symptoms found."
+        lines = []
+        for s in rows:
+            sev = str(s["severity"]) if s["severity"] is not None else "none"
+            parts = [f"#{s['id']} {s['symptom']}", f"severity={sev}", s["occurred_at"][:16]]
+            if s["notes"]:
+                parts.append(f"notes={s['notes'][:80]}")
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
+
+    elif name == "get_symptom":
+        s = symptoms_db.get_symptom(int(arguments["symptom_id"]))
+        if s is None:
+            return "Symptom log not found."
+        lines = [
+            f"Symptom #{s['id']}",
+            f"  Symptom: {s['symptom']}",
+            f"  Severity: {s['severity']}",
+            f"  Occurred at: {s['occurred_at']}",
+            f"  Notes: {s['notes']}",
+            f"  Logged at: {s['logged_at']}",
+        ]
+        return "\n".join(lines)
+
+    elif name == "delete_symptom":
+        deleted = symptoms_db.delete_symptom(int(arguments["symptom_id"]))
+        if deleted:
+            return "Symptom log deleted."
+        return "Symptom log not found."
 
     raise ValueError(f"Unknown tool: {name}")
 
