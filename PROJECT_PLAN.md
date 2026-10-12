@@ -181,7 +181,7 @@ Findings from a code review. Ordered by priority within each group.
 ### High priority
 - [x] **Secret/data file permissions.** `.env` is `664` and `personal_assistant.db` is `644` — readable by any local user. `chmod 600` both. (Host-only; not tracked in git.)
 - [x] **Tool errors can poison the history.** In `run_loop` / `_run_reflection`, if `mcp.call_tool` raises, the `tool_call` event is written but no `tool_result`. Every later projection then contains a `tool_use` with no matching `tool_result`, which the API rejects, so every turn fails until the context bound moves past it. Fixed: shared `_execute_tool_calls` always writes a `tool_result`; MCP `isError` is now propagated as `is_error` (ordinary tool exceptions were already returned as error results by the MCP server, so this only bit on transport failures).
-- [ ] **No iteration cap on agent loops.** Neither `run_loop` nor `_run_reflection` limits rounds, so a looping model can burn API credits. Add a max (~10–20) and write an `error` event when it's hit.
+- [x] **No iteration cap on agent loops.** Neither `run_loop` nor `_run_reflection` limits rounds, so a looping model can burn API credits. Fixed: both loops capped at `_MAX_API_CALLS` (15); hitting it writes an `error` event.
 
 ### Robustness
 - [ ] **Telegram send failures.** `reply_text` fails on messages over 4096 chars and on empty strings (a tool-only `end_turn` yields `""`). Split long replies; substitute a placeholder for empty ones.
