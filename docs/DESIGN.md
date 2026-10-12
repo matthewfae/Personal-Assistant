@@ -248,3 +248,11 @@ Configured in `bot/agent.py`:
 - `_MAX_API_CALLS = 15` caps API calls per loop (main turn and reflection each).
 
 Thinking blocks are kept in the in-memory message list within a turn (`response.content` is appended unchanged) but are not stored in events, so they are not replayed in later turns.
+
+## Tests
+
+`uv run pytest` runs the suite in `tests/`. `pytest` is a dev dependency; `pyproject.toml` puts both the repo root and `bot/` on the import path, matching how `bot/` modules import each other.
+
+`tests/conftest.py` has an autouse fixture that points `db.connection` at a fresh temporary database for every test, so tests never touch `personal_assistant.db`.
+
+Covered so far: `project_messages()` (`tests/test_project_messages.py`) and `split_message()` (`tests/test_split_message.py`).
