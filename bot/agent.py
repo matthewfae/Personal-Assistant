@@ -108,6 +108,8 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
                     "type": "tool_result",
                     "tool_use_id": json.loads(tr["payload"])["tool_use_id"],
                     "content": json.loads(tr["payload"])["content"],
+                    # Older events predate is_error; treat as success.
+                    "is_error": json.loads(tr["payload"]).get("is_error", False),
                 }
                 for tr in tool_results_by_api.get(row["id"], [])
             ]
@@ -124,6 +126,53 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
 def _load_from_event_id() -> int:
     """Return the current context projection bound from the context_bound table."""
     return context_db.get_context_bound()
+
+
+async def _execute_tool_calls(
+    mcp: MCPClient,
+    turn_id: str,
+    response,
+    api_call_id: int,
+) -> tuple[list[dict], int | None]:
+    """Run every tool_use block in response, writing tool_call/tool_result events.
+
+    Returns (tool_result blocks for the next request, id of the last tool_result event).
+
+    A tool_result is always written for every tool_call, even if the MCP call
+    itself raises. Otherwise the event log would hold a tool_use with no
+    matching tool_result, and every later projection would be rejected by the API.
+    """
+    tool_results = []
+    last_tool_result_id: int | None = None
+    for block in response.content:
+        if block.type != "tool_use":
+            continue
+        with get_db() as conn:
+            tool_call_id = write_event(conn, turn_id, "tool_call", {
+                "v": 1,
+                "tool_use_id": block.id,
+                "name": block.name,
+                "input": block.input,
+            }, parent_event_id=api_call_id)
+        try:
+            output = await mcp.call_tool(block.name, block.input)
+            content, is_error = output.content, output.is_error
+        except Exception as e:
+            content, is_error = f"Tool call failed: {type(e).__name__}: {e}", True
+        with get_db() as conn:
+            last_tool_result_id = write_event(conn, turn_id, "tool_result", {
+                "v": 1,
+                "tool_use_id": block.id,
+                "content": content,
+                "is_error": is_error,
+            }, parent_event_id=tool_call_id)
+        tool_results.append({
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": content,
+            "is_error": is_error,
+        })
+    return tool_results, last_tool_result_id
 
 
 async def _run_reflection(
@@ -188,29 +237,9 @@ async def _run_reflection(
                 return final_text
 
             elif response.stop_reason == "tool_use":
-                tool_results = []
-                last_tool_result_id: int | None = None
-                for block in response.content:
-                    if block.type == "tool_use":
-                        with get_db() as conn:
-                            tool_call_id = write_event(conn, turn_id, "tool_call", {
-                                "v": 1,
-                                "tool_use_id": block.id,
-                                "name": block.name,
-                                "input": block.input,
-                            }, parent_event_id=api_call_id)
-                        result = await mcp.call_tool(block.name, block.input)
-                        with get_db() as conn:
-                            last_tool_result_id = write_event(conn, turn_id, "tool_result", {
-                                "v": 1,
-                                "tool_use_id": block.id,
-                                "content": result,
-                            }, parent_event_id=tool_call_id)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result,
-                        })
+                tool_results, last_tool_result_id = await _execute_tool_calls(
+                    mcp, turn_id, response, api_call_id,
+                )
                 messages.append({"role": "user", "content": tool_results})
                 if last_tool_result_id is not None:
                     next_api_call_parent_id = last_tool_result_id
@@ -312,31 +341,9 @@ async def run_loop(
             return TurnResult(reply=final_text, proactive=proactive_text)
 
         elif response.stop_reason == "tool_use":
-            tool_results = []
-            last_tool_result_id: int | None = None
-            for block in response.content:
-                if block.type == "tool_use":
-                    with get_db() as conn:
-                        tool_call_id = write_event(conn, turn_id, "tool_call", {
-                            "v": 1,
-                            "tool_use_id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        }, parent_event_id=api_call_id)
-                    result = await mcp.call_tool(block.name, block.input)
-                    with get_db() as conn:
-                        last_tool_result_id = write_event(conn, turn_id, "tool_result", {
-                            "v": 1,
-                            "tool_use_id": block.id,
-                            "content": result,
-                        }, parent_event_id=tool_call_id)
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result,
-                        }
-                    )
+            tool_results, last_tool_result_id = await _execute_tool_calls(
+                mcp, turn_id, response, api_call_id,
+            )
             messages.append({"role": "user", "content": tool_results})
             # Next api_call's parent is the last tool_result written in this round.
             if last_tool_result_id is not None:
