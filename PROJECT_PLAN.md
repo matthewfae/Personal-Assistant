@@ -182,7 +182,7 @@ Findings from a code review. Ordered by priority within each group.
 - [x] **No iteration cap on agent loops.** Neither `run_loop` nor `_run_reflection` limits rounds, so a looping model can burn API credits. Fixed: both loops capped at `_MAX_API_CALLS` (15); hitting it writes an `error` event.
 
 ### Robustness
-- [ ] **Telegram send failures.** `reply_text` fails on messages over 4096 chars and on empty strings (a tool-only `end_turn` yields `""`). Split long replies; substitute a placeholder for empty ones.
+- [x] **Telegram send failures.** `reply_text` fails on messages over 4096 chars and on empty strings (a tool-only `end_turn` yields `""`). Fixed: `split_message` splits replies at paragraph/line/word boundaries within Telegram's 4096 UTF-16-unit limit; empty replies send a placeholder.
 - [ ] **Sync client in async code.** `Anthropic` (sync) is called inside async handlers, blocking the event loop for each API call. Switch to `AsyncAnthropic` and `await` the calls.
 - [ ] **`query` read-only enforcement.** The `startswith("SELECT")` check rejects valid `WITH …` queries and isn't a real guarantee. Open a read-only connection (`file:...?mode=ro`, `uri=True`) for `run_query` instead.
 
