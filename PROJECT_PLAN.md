@@ -195,7 +195,7 @@ Findings from a code review. Ordered by priority within each group.
 ### Ops (outside the repo)
 - [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
 - [x] **Bot token written to the journal.** `httpx` logged every Telegram API URL at INFO, and those URLs contain the bot token. Fixed: `httpx` logger set to WARNING in `telegram_handler.py`.
-- [ ] **Rotate the Telegram bot token.** The old token is still in past journal entries and was exposed in a Claude Code session. @BotFather → `/revoke` → update `TELEGRAM_BOT_TOKEN` in `.env` → restart the service.
+- [x] **Rotate the Telegram bot token.** The old token was in past journal entries and was exposed in a Claude Code session. Revoked via @BotFather and replaced in `.env` (2026-10-12).
 
 ## Stage 9 (Future) — Security Hardening
 
