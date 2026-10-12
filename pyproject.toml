@@ -10,3 +10,13 @@ dependencies = [
     "mcp>=0.1.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+
+[tool.pytest.ini_options]
+# bot/ modules import each other as top-level modules (e.g. `from agent import ...`).
+pythonpath = [".", "bot"]
+testpaths = ["tests"]
