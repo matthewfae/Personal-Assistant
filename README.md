@@ -6,7 +6,7 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Stages 1–5 are complete. The agent loop writes every API call, tool call, and message as an immutable event row; conversation history is projected from the events table at turn start; a post-turn meta-call sets the projection bound for the next turn as a `context_decision` event; the Telegram handler routes incoming messages through the loop with a sender allowlist and a "working…" ack. Monitoring and hardening are deferred. See `PROJECT_PLAN.md` for the full stage breakdown.
+Stages 1–8 are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. After each reply, a reflection step lets Claude trim the context window (`set_context_bound`), use tools, or send a follow-up message. Claude manages tasks, a shopping list, and symptom logs through MCP tools, and can run read-only SQL over any table. The bot runs as a `systemd` service. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
 
 ## Repository layout
 

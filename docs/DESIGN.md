@@ -12,6 +12,10 @@ tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
 db/context.py             Read/write the context projection bound (context_bound table)
+db/tasks.py               Tasks CRUD
+db/shopping.py            Shopping list CRUD
+db/symptoms.py            Symptom log CRUD
+db/query.py               Read-only ad-hoc SQL for the query tool
 prompts/system.md         Main turn system prompt ({current_time} available)
 prompts/reflection.md     Reflection step system prompt ({current_time} available)
 ```
@@ -25,7 +29,8 @@ MCP / Claude
     │
 tools/server.py       ← MCP boundary: tool schemas, dispatch, string formatting
     │
-db/context.py         ← Read/write the context projection bound
+db/context.py, db/tasks.py, db/shopping.py, db/symptoms.py, db/query.py
+                      ← Table-level data access
     │
 db/connection.py      ← Connection management, schema DDL
 db/mutation_log.py    ← Audit writer (called within the same transaction as each write)
@@ -102,12 +107,14 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `user_message`      | `content`                                                | None (turn root)    |
 | `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
 | `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
-| `tool_result`       | `tool_use_id`, `content`                                 | `tool_call`         |
+| `tool_result`       | `tool_use_id`, `content`, `is_error`                     | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
 | `telegram_ack`      | `telegram_message_id`                                    | None (turn root)    |
-| `error`             | `context`, `message`                                     | `assistant_message` |
+| `error`             | `context`, `message`                                     | `assistant_message` (reflection); last input event (main turn) |
 
-`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (e.g. `"reflection"`); `message` is the exception string.
+`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (`"reflection"` or `"main_turn"`); `message` is the exception string or a description of the failure.
+
+`tool_result.is_error` is `true` when the tool returned an error or the MCP call itself raised. Events written before this field existed have no `is_error`; the projection treats them as successful.
 
 ## Tools
 
@@ -167,9 +174,10 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
 6. Loops (main turn):
    - Calls Claude with the history, system prompt (`cache_control: ephemeral`), and filtered tool list. Writes an `api_call` event.
    - On `end_turn`: writes an `assistant_message` event, then calls `_run_reflection()`.
-   - On `tool_use`: writes `tool_call` and `tool_result` events, appends results to messages, loops.
-7. After reflection, reloads `_from_event_id` from the DB.
-8. Returns `TurnResult(reply=final_text, proactive=proactive_text)`.
+   - On `tool_use`: calls `_execute_tool_calls()` (below), appends results to messages, loops.
+   - On any other stop reason: returns an "Unexpected stop reason" reply.
+7. Returns `TurnResult(reply=final_text, proactive=proactive_text)`.
+8. If the loop hits `_MAX_API_CALLS` (15) without finishing, writes an `error` event (`context: "main_turn"`) and returns a short failure reply.
 
 `_run_reflection(client, mcp, turn_id, assistant_message_id)` → `str | None`:
 
@@ -177,8 +185,13 @@ Runs as a mini agent loop after the main turn:
 1. Re-projects messages from the DB (now includes the just-written `assistant_message`).
 2. Loops with the full tool list (including `set_context_bound`) and the reflection system prompt (`cache_control: ephemeral`).
 3. On `end_turn`: if final text is `PASS` (case-insensitive), returns `None` without writing an event. Otherwise writes an `assistant_message` event and returns the text.
-4. On `tool_use`: writes `tool_call` and `tool_result` events, loops.
-5. Any exception is caught, written as an `error` event (parented to `assistant_message_id`), and returns `None`.
+4. On `tool_use`: calls `_execute_tool_calls()`, loops.
+5. Capped at `_MAX_API_CALLS` (15); hitting the cap raises, which is handled as below.
+6. Transient API errors (rate limit, connection, timeout) are re-raised. Any other exception is caught, written as an `error` event (parented to `assistant_message_id`), and returns `None`.
+
+`_execute_tool_calls(mcp, turn_id, response, api_call_id)` → `(tool_results, last_tool_result_id)`:
+
+Shared by both loops. For each `tool_use` block, writes a `tool_call` event, calls the tool, and **always** writes a matching `tool_result` event — even if `mcp.call_tool` raises (the exception text becomes the result with `is_error: true`). This guarantees every `tool_use` in the projection has its `tool_result`; the API rejects a history where one is missing.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
 
@@ -195,9 +208,9 @@ All events carry correct `parent_event_id` (causality chain). In-memory message 
 
 The events table is the source of truth — a flat, append-only log. There is no "conversation" concept: the only grouping unit is `turn_id`. The projection bound is Claude's working memory, managed by the `set_context_bound` tool during the reflection step.
 
-The messages array is projected from events at each turn start and discarded at turn end. In-memory state exists only for the duration of one turn. Facts table is a projection of `add_fact` tool calls, kept in sync at write time.
+The messages array is projected from events at each turn start and discarded at turn end. In-memory state exists only for the duration of one turn. Tasks, shopping, and symptoms are ordinary tables written by tools; each write is also recorded as `tool_call`/`tool_result` events and in `mutation_log`.
 
-`_from_event_id` (module-level int, default `0`) controls the projection bound. It is loaded from the `context_bound` table at each turn start and reloaded after the reflection step completes. Resets to `0` on process restart (all events re-projected until the first `set_context_bound` call).
+The projection bound lives in the `context_bound` table (default `0`). `_load_from_event_id()` reads it at the start of the main turn and again at the start of the reflection step. Because it is persisted, it survives process restarts.
 
 ## Debug
 
@@ -217,4 +230,4 @@ Two instances in `agent.py`:
 
 ## Model
 
-Configured in `bot/agent.py`. `max_tokens=8192`.
+Configured in `bot/agent.py` (`_MODEL`). `max_tokens=8192`. `_MAX_API_CALLS = 15` caps API calls per loop (main turn and reflection each).
