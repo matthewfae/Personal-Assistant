@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -117,7 +117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ack = await update.message.reply_text("working\u2026")
     _write_ack_event(turn_id, ack.message_id)
 
-    client: Anthropic = context.bot_data["client"]
+    client: AsyncAnthropic = context.bot_data["client"]
     mcp = context.bot_data["mcp"]
 
     try:
@@ -140,9 +140,12 @@ async def main() -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     allowed_user_id = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
     init_db()
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-    app = ApplicationBuilder().token(token).build()
+    # Handle one update at a time (python-telegram-bot's default, made explicit).
+    # Turns must not overlap: concurrent turns would interleave their events and
+    # race on the context bound. Don't enable this without adding a lock around run_loop.
+    app = ApplicationBuilder().token(token).concurrent_updates(False).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     async with mcp_client() as mcp:

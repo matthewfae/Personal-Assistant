@@ -164,7 +164,7 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
 
 ## Agent Flow
 
-`run_loop(client, mcp, user_message)` → `TurnResult(reply, proactive)`:
+`run_loop(client, mcp, user_message)` → `TurnResult(reply, proactive)`. `client` is an `AsyncAnthropic`; every API call is awaited, so the event loop is never blocked while waiting on Claude.
 
 1. Generates a fresh `turn_id` (UUID hex).
 2. Calls `_load_from_event_id()` (reads `context_bound` table) to get the projection bound.
@@ -203,6 +203,8 @@ For each message from the allowed user: send a "working…" ack, write a `telegr
 Replies go through `_send_reply()`:
 - `split_message(text)` splits text into chunks of at most 4096 UTF-16 code units (Telegram's limit, counted the way Telegram counts it, so most emoji count as 2). It breaks at the last paragraph break, line break, or space in the second half of the window, and hard-cuts otherwise. It never returns empty chunks.
 - If there is no text (e.g. the turn ended after tool calls), it sends `(done — no reply text)` instead, since Telegram rejects empty messages.
+
+**One turn at a time:** the application is built with `concurrent_updates(False)` (python-telegram-bot's default, set explicitly). Updates are handled sequentially, so a message that arrives mid-turn waits for the current turn to finish. Turns must not overlap: they would interleave events and race on the context bound. Enabling concurrent updates requires a lock around `run_loop`.
 
 **Logging:** the `httpx` logger is set to WARNING. At INFO it logs every request URL, and Telegram Bot API URLs contain the bot token (`https://api.telegram.org/bot<TOKEN>/...`). Keep it at WARNING or above.
 
@@ -255,4 +257,4 @@ Thinking blocks are kept in the in-memory message list within a turn (`response.
 
 `tests/conftest.py` has an autouse fixture that points `db.connection` at a fresh temporary database for every test, so tests never touch `personal_assistant.db`.
 
-Covered so far: `project_messages()` (`tests/test_project_messages.py`) and `split_message()` (`tests/test_split_message.py`).
+Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), and `run_loop()` including the reflection step (`tests/test_run_loop.py`, using a fake async client and fake MCP client).

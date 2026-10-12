@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import anthropic
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 import db.context as context_db
 from db.connection import get_db
@@ -188,7 +188,7 @@ async def _execute_tool_calls(
 
 
 async def _run_reflection(
-    client: Anthropic,
+    client: AsyncAnthropic,
     mcp: MCPClient,
     turn_id: str,
     assistant_message_id: int,
@@ -209,7 +209,7 @@ async def _run_reflection(
         next_api_call_parent_id: int = assistant_message_id
 
         for _ in range(_MAX_API_CALLS):
-            response = client.messages.create(
+            response = await client.messages.create(
                 model=_MODEL,
                 max_tokens=_MAX_TOKENS,
                 output_config={"effort": _EFFORT},
@@ -275,7 +275,7 @@ async def _run_reflection(
 
 
 async def run_loop(
-    client: Anthropic,
+    client: AsyncAnthropic,
     mcp: MCPClient,
     user_message: str,
     turn_id: str | None = None,
@@ -317,7 +317,7 @@ async def run_loop(
         main_tools = [*main_tools[:-1], {**main_tools[-1], "cache_control": {"type": "ephemeral"}}]
 
     for _ in range(_MAX_API_CALLS):
-        response = client.messages.create(
+        response = await client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             output_config={"effort": _EFFORT},
