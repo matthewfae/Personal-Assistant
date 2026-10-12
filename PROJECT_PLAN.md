@@ -23,7 +23,7 @@ Every meaningful thing that happens — incoming user message, outgoing assistan
 - **Per-type payload versioning.** Every event payload is a JSON blob with a `v: <int>` field, versioned per event type. Consumers must check `v` and fail loudly on unknown versions.
 - **Full payload captured.** Complete arguments and results of tool calls, complete user message, complete assistant response.
 - **`messages` seeded from a projection of events.** At turn start, the `messages` array is built by querying the events table. Within the turn, new messages are appended to an in-memory accumulator. When the turn ends the list is discarded; the next turn re-projects from the DB.
-- **Facts and other structured state are projections.** Kept in sync by the same tool call that writes the corresponding event. Rebuildable from the event log.
+- **Structured state (tasks, shopping, symptoms) is written by tools.** Each write is recorded as a `tool_call` / `tool_result` event pair, plus a row in `mutation_log`.
 - **Mutation log is a separate layer.** `mutation_log` records row-level physical writes; `events` records semantic agent activity.
 
 ### Turn Model
@@ -50,9 +50,7 @@ Not a constraint. Everything runs synchronously. A lightweight "working…" Tele
 
 ### Tool Surface
 
-Start minimal. Add tools only when driven by concrete need. Current surface is **`add_fact`** — reads come for free via events projection. Read/search tools are added only when context can no longer fit the relevant events.
-
-`set_context_bound` is planned (Stage 7) — replaces the dedicated `context_decision` meta-call with a tool Claude calls during the reflection step.
+Start minimal. Add tools only when driven by concrete need. Current surface: task, shopping and symptom CRUD tools, a read-only `query` tool for ad-hoc SQL over any table, and `set_context_bound` (reflection step only). The full list lives in `docs/DESIGN.md` → Tools.
 
 ## Completed: Stage 3 — Events-Driven Rebuild ✓
 
@@ -106,7 +104,7 @@ Replaced the Stage 4 `context_decision` meta-call with a unified post-turn refle
 
 **7e.** Both system prompts describe the full architecture so Claude understands its role at each step. Main turn prompt is focused on responding; reflection prompt explains the event/projection/bound system in detail. ✓
 
-## Current Stage: Stage 8 — Tasks & Shopping
+## Completed: Stage 8 — Tasks & Shopping ✓
 
 Two new tables and tool sets to support the core use case: keeping track of everything the user needs to do so nothing falls through the cracks, and Claude can surface the right things at the right time.
 
@@ -190,7 +188,7 @@ Findings from a code review. Ordered by priority within each group.
 
 ### Housekeeping
 - [ ] **Tests.** `tests/` is empty. Start with `project_messages()` (pure logic, tricky edge cases); see Deferred Work → Unit Tests.
-- [ ] **Stale docs.** README says "Stages 1–5 complete"; "Tool Surface" section above still references `add_fact`; Stage 8 is still marked current.
+- [x] **Stale docs.** README says "Stages 1–5 complete"; "Tool Surface" section above still references `add_fact`; Stage 8 is still marked current.
 - [ ] **Model version.** `_MODEL` is `claude-sonnet-4-6`; consider upgrading to a current model.
 
 ### Ops (outside the repo)
