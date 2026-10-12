@@ -189,7 +189,8 @@ Findings from a code review. Ordered by priority within each group.
 ### Housekeeping
 - [ ] **Tests.** `tests/` is empty. Start with `project_messages()` (pure logic, tricky edge cases); see Deferred Work → Unit Tests.
 - [x] **Stale docs.** README says "Stages 1–5 complete"; "Tool Surface" section above still references `add_fact`; Stage 8 is still marked current.
-- [ ] **Model version.** `_MODEL` is `claude-sonnet-4-6`; consider upgrading to a current model.
+- [x] **Model version.** Upgraded from `claude-sonnet-4-6` to `claude-sonnet-5-5` (cheaper: $2/$10 vs $3/$15 per MTok). Sonnet 5.5 thinks by default, so effort is set explicitly (`medium`) and `max_tokens` raised to 16000. Check `api_call` token counts after a few days to confirm the net saving.
+- [ ] **Prompt cache invalidated every minute.** `{current_time}` in both system prompts is rendered to the minute, so the cached system prompt is discarded whenever the minute changes. Round it to the hour, or move it out of the system prompt (e.g. into the user message).
 
 ### Ops (outside the repo)
 - [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
