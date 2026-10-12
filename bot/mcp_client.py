@@ -6,6 +6,7 @@ interface for the agent to list tools and dispatch tool calls.
 import logging
 import sys
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,12 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 # Absolute path to the server script, regardless of working directory
 _TOOLS_SERVER = Path(__file__).parent.parent / "tools" / "server.py"
+
+
+@dataclass
+class ToolOutput:
+    content: str
+    is_error: bool
 
 
 class MCPClient:
@@ -29,7 +36,7 @@ class MCPClient:
         """Tool definitions formatted for the Anthropic API."""
         return self._tools
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
+    async def call_tool(self, name: str, arguments: dict) -> ToolOutput:
         result = await self._session.call_tool(name, arguments)
         parts = []
         for block in result.content:
@@ -37,7 +44,7 @@ class MCPClient:
                 parts.append(block.text)
             else:
                 logger.warning("Ignoring non-text tool result block: type=%s", type(block).__name__)
-        return "\n".join(parts)
+        return ToolOutput(content="\n".join(parts), is_error=bool(result.isError))
 
 
 @asynccontextmanager
@@ -50,7 +57,7 @@ async def mcp_client():
     Usage:
         async with mcp_client() as client:
             tools = client.tools       # list[dict] for Anthropic API
-            result = await client.call_tool("add_fact", {...})
+            result = await client.call_tool("add_task", {...})
     """
     server_params = StdioServerParameters(
         command=sys.executable,

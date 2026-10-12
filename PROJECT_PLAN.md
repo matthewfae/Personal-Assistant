@@ -174,6 +174,28 @@ New `symptoms` table for logging medical symptom occurrences with severity and t
 
 **8b tools:** `log_symptom`, `update_symptom`, `list_symptoms`, `get_symptom`, `delete_symptom`.
 
+## Current TODO — Review Findings (2026-10-12)
+
+Findings from a code review. Ordered by priority within each group.
+
+### High priority
+- [x] **Secret/data file permissions.** `.env` is `664` and `personal_assistant.db` is `644` — readable by any local user. `chmod 600` both. (Host-only; not tracked in git.)
+- [x] **Tool errors can poison the history.** In `run_loop` / `_run_reflection`, if `mcp.call_tool` raises, the `tool_call` event is written but no `tool_result`. Every later projection then contains a `tool_use` with no matching `tool_result`, which the API rejects, so every turn fails until the context bound moves past it. Fixed: shared `_execute_tool_calls` always writes a `tool_result`; MCP `isError` is now propagated as `is_error` (ordinary tool exceptions were already returned as error results by the MCP server, so this only bit on transport failures).
+- [ ] **No iteration cap on agent loops.** Neither `run_loop` nor `_run_reflection` limits rounds, so a looping model can burn API credits. Add a max (~10–20) and write an `error` event when it's hit.
+
+### Robustness
+- [ ] **Telegram send failures.** `reply_text` fails on messages over 4096 chars and on empty strings (a tool-only `end_turn` yields `""`). Split long replies; substitute a placeholder for empty ones.
+- [ ] **Sync client in async code.** `Anthropic` (sync) is called inside async handlers, blocking the event loop for each API call. Switch to `AsyncAnthropic` and `await` the calls.
+- [ ] **`query` read-only enforcement.** The `startswith("SELECT")` check rejects valid `WITH …` queries and isn't a real guarantee. Open a read-only connection (`file:...?mode=ro`, `uri=True`) for `run_query` instead.
+
+### Housekeeping
+- [ ] **Tests.** `tests/` is empty. Start with `project_messages()` (pure logic, tricky edge cases); see Deferred Work → Unit Tests.
+- [ ] **Stale docs.** README says "Stages 1–5 complete"; "Tool Surface" section above still references `add_fact`; Stage 8 is still marked current.
+- [ ] **Model version.** `_MODEL` is `claude-sonnet-4-6`; consider upgrading to a current model.
+
+### Ops (outside the repo)
+- [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
+
 ## Stage 9 (Future) — Security Hardening
 
 Secret management, DB access patterns, file permissions, rate limiting.
