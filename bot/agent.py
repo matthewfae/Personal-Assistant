@@ -19,6 +19,10 @@ from prompt_builder import PromptBuilder
 
 _MODEL = "claude-sonnet-4-6"
 
+# Upper bound on API calls per loop (main turn or reflection), so a model that
+# keeps calling tools can't run up unbounded cost.
+_MAX_API_CALLS = 15
+
 _system_prompt = PromptBuilder("system.md")
 _reflection_prompt = PromptBuilder("reflection.md")
 
@@ -196,7 +200,7 @@ async def _run_reflection(
 
         next_api_call_parent_id: int = assistant_message_id
 
-        while True:
+        for _ in range(_MAX_API_CALLS):
             response = client.messages.create(
                 model=_MODEL,
                 max_tokens=8192,
@@ -246,6 +250,8 @@ async def _run_reflection(
 
             else:
                 return None
+
+        raise RuntimeError(f"Reflection stopped after {_MAX_API_CALLS} API calls without finishing")
 
     except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APITimeoutError):
         raise
@@ -301,7 +307,7 @@ async def run_loop(
     if main_tools and not main_tools[-1].get("cache_control"):
         main_tools = [*main_tools[:-1], {**main_tools[-1], "cache_control": {"type": "ephemeral"}}]
 
-    while True:
+    for _ in range(_MAX_API_CALLS):
         response = client.messages.create(
             model=_MODEL,
             max_tokens=8192,
@@ -351,6 +357,15 @@ async def run_loop(
 
         else:
             return TurnResult(reply=f"Unexpected stop reason: {response.stop_reason}", proactive=None)
+
+    message = f"Stopped after {_MAX_API_CALLS} API calls without a final response"
+    with get_db() as conn:
+        write_event(
+            conn, turn_id, "error",
+            {"v": 1, "context": "main_turn", "message": message},
+            parent_event_id=next_api_call_parent_id,
+        )
+    return TurnResult(reply=f"{message}. Try rephrasing or breaking the request up.", proactive=None)
 
 
 def debug_causality_tree(turn_id: str) -> str:
