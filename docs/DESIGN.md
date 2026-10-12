@@ -135,7 +135,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `list_symptoms` | main turn + reflection | List symptoms, most recent first. Filter by name (substring) or `since` (ISO-8601 bound). Default limit 100. |
 | `get_symptom` | main turn + reflection | Full detail for one symptom log by id. |
 | `delete_symptom` | main turn + reflection | Delete a symptom log (use when logged in error). |
-| `query` | main turn + reflection | Run an arbitrary read-only SELECT against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
+| `query` | main turn + reflection | Run an arbitrary read-only query (`SELECT` / `WITH … SELECT`) against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
 
 `set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
 
@@ -144,7 +144,7 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
 ### Data Access Layer
 
 **`db/query.py`**
-- `run_query(sql)` → list of dicts — executes a read-only SELECT (max 200 rows). Raises `ValueError` for non-SELECT statements or queries containing semicolons.
+- `run_query(sql)` → list of dicts — runs one statement on a connection opened in SQLite's read-only mode (`file:…?mode=ro`), so the database itself rejects writes. Any `SELECT` works, including `WITH … SELECT`. Returns at most 200 rows. Every SQLite failure (bad SQL, attempted write, multiple statements) is raised as `ValueError("Query failed: …")`, which the tool returns to Claude as an error message.
 
 **`db/tasks.py`**
 - `add_task(area, summary, priority?, estimated_hours?, detail_json?, status?)` → dict
@@ -271,4 +271,4 @@ Thinking blocks are kept in the in-memory message list within a turn (`response.
 
 `tests/conftest.py` has an autouse fixture that points `db.connection` at a fresh temporary database for every test, so tests never touch `personal_assistant.db`.
 
-Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), and `run_loop()` including the reflection step (`tests/test_run_loop.py`, using a fake async client and fake MCP client).
+Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` including the reflection step (`tests/test_run_loop.py`, using a fake async client and fake MCP client), and `run_query()` (`tests/test_query.py`).

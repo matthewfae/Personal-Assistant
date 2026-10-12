@@ -156,7 +156,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="query",
             description=(
-                "Run a read-only SELECT query against the database. "
+                "Run a read-only SQL query (SELECT, or WITH ... SELECT) against the database. "
                 "Returns up to 200 rows. "
                 "Tables: "
                 "tasks (id, area, summary, status, priority, estimated_hours, detail_json, created_at, updated_at), "
@@ -170,7 +170,7 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "sql": {
                         "type": "string",
-                        "description": "A SELECT statement to execute. No semicolons.",
+                        "description": "A single read-only statement. Writes are rejected by the database.",
                     },
                 },
                 "required": ["sql"],
