@@ -7,7 +7,7 @@ bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messa
 bot/main.py               Entry point: starts the Telegram bot
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
-bot/prompt_builder.py     Loads prompt templates from prompts/, injects ambient context
+bot/prompt_builder.py     Loads prompt templates from prompts/; format_time() for message timestamps
 tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
@@ -16,8 +16,8 @@ db/tasks.py               Tasks CRUD
 db/shopping.py            Shopping list CRUD
 db/symptoms.py            Symptom log CRUD
 db/query.py               Read-only ad-hoc SQL for the query tool
-prompts/system.md         Main turn system prompt ({current_time} available)
-prompts/reflection.md     Reflection step system prompt ({current_time} available)
+prompts/system.md         Main turn system prompt (static)
+prompts/reflection.md     Reflection step system prompt (static)
 ```
 
 ## Architecture
@@ -105,7 +105,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | type                | payload fields (beyond `v`)                              | parent              |
 |---------------------|----------------------------------------------------------|---------------------|
 | `user_message`      | `content`                                                | None (turn root)    |
-| `api_call`          | `model`, `input_tokens`, `output_tokens`                 | `user_message` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
+| `api_call`          | `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` | `user_message` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
 | `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
 | `tool_result`       | `tool_use_id`, `content`, `is_error`                     | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
@@ -113,6 +113,8 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `error`             | `context`, `message`                                     | `assistant_message` (reflection); last input event (main turn) |
 
 `error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (`"reflection"` or `"main_turn"`); `message` is the exception string or a description of the failure.
+
+`api_call` cache counts come from `response.usage` (recorded as `0` when absent). Events written before they were added have no cache fields.
 
 `tool_result.is_error` is `true` when the tool returned an error or the MCP call itself raised. Events written before this field existed have no `is_error`; the projection treats them as successful.
 
@@ -167,12 +169,12 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
 `run_loop(client, mcp, user_message)` → `TurnResult(reply, proactive)`. `client` is an `AsyncAnthropic`; every API call is awaited, so the event loop is never blocked while waiting on Claude.
 
 1. Generates a fresh `turn_id` (UUID hex).
-2. Calls `_load_from_event_id()` (reads `context_bound` table) to get the projection bound.
-3. Calls `project_messages(from_event_id)` to build the initial messages list.
-4. Appends the user message in memory and writes a `user_message` event.
+2. Writes the `user_message` event.
+3. Calls `_load_from_event_id()` (reads `context_bound` table) to get the projection bound.
+4. Calls `project_messages(from_event_id)` to build the messages list, which now ends with the new user message. Projecting after the write means the new message is rendered from its stored timestamp, byte-identical to how later turns will render it.
 5. Filters `mcp.tools` to exclude `set_context_bound` for the main turn.
 6. Loops (main turn):
-   - Calls Claude with the history, system prompt (`cache_control: ephemeral`), and filtered tool list. Writes an `api_call` event.
+   - Calls Claude with the history, system prompt (`cache_control: ephemeral`), filtered tool list, and top-level `cache_control: ephemeral` (automatic caching of the message history). Writes an `api_call` event.
    - On `end_turn`: writes an `assistant_message` event, then calls `_run_reflection()`.
    - On `tool_use`: calls `_execute_tool_calls()` (below), appends results to messages, loops.
    - On `refusal`: returns a reply saying Claude declined, with the `stop_details` category.
@@ -183,7 +185,7 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
 `_run_reflection(client, mcp, turn_id, assistant_message_id)` → `str | None`:
 
 Runs as a mini agent loop after the main turn:
-1. Re-projects messages from the DB (now includes the just-written `assistant_message`).
+1. Re-projects messages from the DB (now includes the just-written `assistant_message`) and appends a synthetic `(reflection — <current time>)` user message, which is not stored as an event.
 2. Loops with the full tool list (including `set_context_bound`) and the reflection system prompt (`cache_control: ephemeral`).
 3. On `end_turn`: if final text is `PASS` (case-insensitive), returns `None` without writing an event. Otherwise writes an `assistant_message` event and returns the text.
 4. On `tool_use`: calls `_execute_tool_calls()`, loops.
@@ -231,7 +233,19 @@ The projection bound lives in the `context_bound` table (default `0`). `_load_fr
 
 ## Prompt Templates
 
-`PromptBuilder(template)` loads a named file from `prompts/` at init. `build(**kwargs)` injects ambient context (`current_time`) automatically and merges any caller-supplied kwargs.
+`PromptBuilder(template)` loads a named file from `prompts/` at init. `build(**kwargs)` fills in any caller-supplied kwargs.
+
+**System prompts are static: nothing time-varying goes in them.** Any byte change to the system prompt invalidates the cache for it and everything after it. The current time reaches Claude through the messages instead:
+- `project_messages()` prefixes every user message with its send time, e.g. `[Monday, October 12, 2026 at 5:03 PM CDT]\n…`, rendered by `format_time()` from the event's stored timestamp. Event timestamps never change, so the projected history is byte-stable.
+- The reflection trigger message carries the current time.
+
+`format_time(dt)` renders in the `TIMEZONE` env var's zone (default `America/Chicago`).
+
+### Prompt caching
+
+Three cache breakpoints per request: the last tool definition, the system prompt, and automatic caching (top-level `cache_control`) on the end of the message history. Within a tool-using turn, each API call reuses the previous call's prefix. Across turns, tools and system reuse the cache if a message arrives within the 5-minute TTL; the message history only reuses it if the context bound hasn't moved.
+
+The main turn and the reflection step don't share cache entries: their tool lists differ (`set_context_bound`) and so do their system prompts. Check `cache_read_input_tokens` / `cache_creation_input_tokens` on `api_call` events to see what caching actually saves.
 
 Two instances in `agent.py`:
 - `_system_prompt` — renders `prompts/system.md`, used as the system block in the main turn (marked `cache_control: ephemeral`).

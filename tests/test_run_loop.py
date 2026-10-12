@@ -124,3 +124,41 @@ def test_reflection_follow_up_is_returned_and_recorded():
         last = conn.execute("SELECT type, payload FROM events ORDER BY id DESC LIMIT 1").fetchone()
     assert last["type"] == "assistant_message"
     assert json.loads(last["payload"])["content"] == "Also: the vent task is overdue."
+
+
+def test_prompt_is_cache_friendly():
+    client = FakeClient([
+        _response("end_turn", _text("hello")),
+        _response("end_turn", _text("PASS")),
+    ])
+
+    asyncio.run(run_loop(client, FakeMCP(), "hi"))
+
+    main = client.requests[0]
+    # The system prompt carries no time, so it's identical on every call.
+    assert "{" not in main["system"][0]["text"]
+    assert "current_time" not in main["system"][0]["text"]
+    # The time travels with the user message instead.
+    assert main["messages"][-1]["content"].startswith("[")
+    assert main["messages"][-1]["content"].endswith("]\nhi")
+    # Automatic caching covers the message history.
+    assert main["cache_control"] == {"type": "ephemeral"}
+    assert client.requests[1]["cache_control"] == {"type": "ephemeral"}
+    # The reflection trigger carries the current time.
+    assert client.requests[1]["messages"][-1]["content"].startswith("(reflection — ")
+
+
+def test_cache_token_counts_recorded():
+    response = _response("end_turn", _text("hello"))
+    response.usage.cache_read_input_tokens = 1500
+    response.usage.cache_creation_input_tokens = None  # the API may omit it
+    client = FakeClient([response, _response("end_turn", _text("PASS"))])
+
+    asyncio.run(run_loop(client, FakeMCP(), "hi"))
+
+    with get_db() as conn:
+        payload = json.loads(conn.execute(
+            "SELECT payload FROM events WHERE type = 'api_call' ORDER BY id LIMIT 1"
+        ).fetchone()["payload"])
+    assert payload["cache_read_input_tokens"] == 1500
+    assert payload["cache_creation_input_tokens"] == 0

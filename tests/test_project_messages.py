@@ -1,7 +1,14 @@
 """Tests for agent.project_messages: rebuilding the API messages array from events."""
 
+from datetime import datetime, timezone
+
 from agent import project_messages, write_event
 from db.connection import get_db
+
+# Every user message in these tests is sent at this time, which renders (in the
+# default America/Chicago timezone) as the prefix below.
+SENT_AT = datetime(2026, 10, 12, 22, 3, tzinfo=timezone.utc)
+PREFIX = "[Monday, October 12, 2026 at 5:03 PM CDT]\n"
 
 
 class EventLog:
@@ -10,12 +17,12 @@ class EventLog:
     def __init__(self, turn_id="t1"):
         self.turn_id = turn_id
 
-    def add(self, event_type, payload, parent=None) -> int:
+    def add(self, event_type, payload, parent=None, timestamp=None) -> int:
         with get_db() as conn:
-            return write_event(conn, self.turn_id, event_type, {"v": 1, **payload}, parent)
+            return write_event(conn, self.turn_id, event_type, {"v": 1, **payload}, parent, timestamp)
 
     def user(self, content):
-        return self.add("user_message", {"content": content})
+        return self.add("user_message", {"content": content}, timestamp=SENT_AT)
 
     def api_call(self, parent):
         return self.add("api_call", {"model": "m", "input_tokens": 1, "output_tokens": 1}, parent)
@@ -49,7 +56,7 @@ def test_simple_exchange():
     log.assistant(a, "hello")
 
     assert project_messages() == [
-        {"role": "user", "content": "hi"},
+        {"role": "user", "content": PREFIX + "hi"},
         {"role": "assistant", "content": "hello"},
     ]
 
@@ -64,7 +71,7 @@ def test_tool_round_trip():
     log.assistant(a2, "You have one task.")
 
     assert project_messages() == [
-        {"role": "user", "content": "what's on my list?"},
+        {"role": "user", "content": PREFIX + "what's on my list?"},
         {"role": "assistant", "content": [
             {"type": "tool_use", "id": "toolu_1", "name": "list_tasks", "input": {"status": "open"}},
         ]},
@@ -114,7 +121,7 @@ def test_empty_assistant_message_skipped():
     a = log.api_call(u)
     log.assistant(a, "")
 
-    assert project_messages() == [{"role": "user", "content": "x"}]
+    assert project_messages() == [{"role": "user", "content": PREFIX + "x"}]
 
 
 def test_non_conversation_events_ignored():
@@ -126,7 +133,7 @@ def test_non_conversation_events_ignored():
     log.add("error", {"context": "reflection", "message": "oops"}, m)
 
     assert project_messages() == [
-        {"role": "user", "content": "x"},
+        {"role": "user", "content": PREFIX + "x"},
         {"role": "assistant", "content": "y"},
     ]
 
@@ -140,7 +147,7 @@ def test_bound_excludes_earlier_turns():
     new.assistant(new.api_call(u2), "new answer")
 
     assert project_messages(from_event_id=u2) == [
-        {"role": "user", "content": "new question"},
+        {"role": "user", "content": PREFIX + "new question"},
         {"role": "assistant", "content": "new answer"},
     ]
 
@@ -182,3 +189,10 @@ def test_bound_mid_tool_round_drops_the_whole_round():
     assert project_messages(from_event_id=ids["tool_call"]) == [
         {"role": "assistant", "content": "answer"},
     ]
+
+
+def test_user_message_rendered_identically_on_every_projection():
+    # Byte-stable history is what lets the prompt cache hit across turns.
+    log = EventLog()
+    log.user("hi")
+    assert project_messages() == project_messages()

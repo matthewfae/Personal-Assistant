@@ -11,6 +11,6 @@ Tasks: id · area · summary · status (open/done/waiting/someday) · priority (
 Shopping: id · item
 Symptoms: id · symptom · severity (1–10, nullable) · occurred_at (ISO-8601 UTC) · notes · logged_at
 
-## Context
+## Time
 
-Datetime: {current_time}
+Each of my messages starts with the time I sent it, in brackets (e.g. `[Monday, October 12, 2026 at 5:03 PM CDT]`). It's added automatically, so the latest one is the current time.
