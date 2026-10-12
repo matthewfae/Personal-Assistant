@@ -17,7 +17,15 @@ from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder
 
-_MODEL = "claude-sonnet-4-6"
+_MODEL = "claude-sonnet-5-5"
+
+# Thinking is on by default on Sonnet 5.5 and counts toward output tokens.
+# Effort controls how much it thinks: "medium" suits multi-step tool use;
+# drop to "low" to cut cost further on chat-style turns.
+_EFFORT = "medium"
+
+# Thinking also counts toward max_tokens, so leave room beyond the reply itself.
+_MAX_TOKENS = 16000
 
 # Upper bound on API calls per loop (main turn or reflection), so a model that
 # keeps calling tools can't run up unbounded cost.
@@ -203,7 +211,8 @@ async def _run_reflection(
         for _ in range(_MAX_API_CALLS):
             response = client.messages.create(
                 model=_MODEL,
-                max_tokens=8192,
+                max_tokens=_MAX_TOKENS,
+                output_config={"effort": _EFFORT},
                 system=[
                     {
                         "type": "text",
@@ -310,7 +319,8 @@ async def run_loop(
     for _ in range(_MAX_API_CALLS):
         response = client.messages.create(
             model=_MODEL,
-            max_tokens=8192,
+            max_tokens=_MAX_TOKENS,
+            output_config={"effort": _EFFORT},
             system=[
                 {
                     "type": "text",
@@ -354,6 +364,10 @@ async def run_loop(
             # Next api_call's parent is the last tool_result written in this round.
             if last_tool_result_id is not None:
                 next_api_call_parent_id = last_tool_result_id
+
+        elif response.stop_reason == "refusal":
+            category = response.stop_details.category if response.stop_details else None
+            return TurnResult(reply=f"Claude declined this request (category: {category}).", proactive=None)
 
         else:
             return TurnResult(reply=f"Unexpected stop reason: {response.stop_reason}", proactive=None)
