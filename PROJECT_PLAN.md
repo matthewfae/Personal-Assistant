@@ -86,9 +86,9 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 **6a.** `systemd` service — unit file at `scripts/personal-assistant.service`, installed and running. ✓
 
-**6b.** Structured logging — consistent log levels and format across all modules.
+**6b.** Structured logging — consistent log levels and format across all modules. *(Not started.)*
 
-**6c.** Basic health checks.
+**6c.** Basic health checks. *(Not started.)*
 
 ## Completed: Stage 7 — Reflection Step ✓
 
@@ -183,14 +183,27 @@ Findings from a code review. Ordered by priority within each group.
 
 ### Robustness
 - [x] **Telegram send failures.** `reply_text` fails on messages over 4096 chars and on empty strings (a tool-only `end_turn` yields `""`). Fixed: `split_message` splits replies at paragraph/line/word boundaries within Telegram's 4096 UTF-16-unit limit; empty replies send a placeholder.
-- [ ] **Sync client in async code.** `Anthropic` (sync) is called inside async handlers, blocking the event loop for each API call. Switch to `AsyncAnthropic` and `await` the calls.
-- [ ] **`query` read-only enforcement.** The `startswith("SELECT")` check rejects valid `WITH …` queries and isn't a real guarantee. Open a read-only connection (`file:...?mode=ro`, `uri=True`) for `run_query` instead.
+- [x] **Sync client in async code.** `Anthropic` (sync) is called inside async handlers, blocking the event loop for each API call. Switch to `AsyncAnthropic` and `await` the calls.
+  - *Concurrency note:* switching does **not** let turns overlap. python-telegram-bot handles one update at a time by default (`concurrent_updates` off), so turns are already serialized by the framework, not by the blocking client. Set `.concurrent_updates(False)` explicitly in `ApplicationBuilder` with a comment, so the guarantee is visible and nobody turns it on without adding a lock. (Concurrent turns would interleave events and race on `context_bound`.)
+  - Done (#48): `AsyncAnthropic` everywhere, `concurrent_updates(False)` explicit.
+- [x] **`query` read-only enforcement.** The `startswith("SELECT")` check rejects valid `WITH …` queries and isn't a real guarantee. Open a read-only connection (`file:...?mode=ro`, `uri=True`) for `run_query` instead, so SQLite itself refuses writes. Keep the `_MAX_ROWS` cap (200) so a careless `SELECT * FROM events` can't flood the context. Done (#51); SQL errors now go back to Claude as messages instead of logged tool failures.
 
 ### Housekeeping
-- [ ] **Tests.** `tests/` is empty. Start with `project_messages()` (pure logic, tricky edge cases); see Deferred Work → Unit Tests.
+- [x] **Tests.** `tests/` is empty. Start with `project_messages()` (pure logic, tricky edge cases); see Deferred Work → Unit Tests. Do this *first*, so the async and timestamp changes below have something to check against. Done (#47–#49, #51): 33 tests over `project_messages`, `split_message`, `run_loop` (fake async client) and `run_query`; `uv run pytest`.
 - [x] **Stale docs.** README says "Stages 1–5 complete"; "Tool Surface" section above still references `add_fact`; Stage 8 is still marked current.
 - [x] **Model version.** Upgraded from `claude-sonnet-4-6` to `claude-sonnet-5-5` (cheaper: $2/$10 vs $3/$15 per MTok). Sonnet 5.5 thinks by default, so effort is set explicitly (`medium`) and `max_tokens` raised to 16000. Check `api_call` token counts after a few days to confirm the net saving.
-- [ ] **Prompt cache invalidated every minute.** `{current_time}` in both system prompts is rendered to the minute, so the cached system prompt is discarded whenever the minute changes. Round it to the hour, or move it out of the system prompt (e.g. into the user message).
+- [x] **Prompt cache invalidated every minute.** `{current_time}` in both system prompts is rendered to the minute, so the cached system prompt is discarded whenever the minute changes.
+  - *Fix:* move the time out of the system prompt rather than rounding it. Rounding to the hour would lose the minute precision Claude needs for "remind me in 20 minutes" or "what can I do before 5?". Instead, `project_messages` prefixes each user message with its send time, taken from the event's own (immutable) `timestamp`, so the rendered history is byte-stable across turns. The reflection trigger carries the current time the same way. Both system prompts become fully static.
+  - *Also:* there is currently no cache breakpoint on `messages`, so every API call pays full price for the whole history — including the 2nd–15th calls within a single tool-using turn. Add top-level automatic caching (`cache_control={"type": "ephemeral"}` on `messages.create`), and record `cache_read_input_tokens` / `cache_creation_input_tokens` in `api_call` events so cache hits can actually be verified.
+  - Done (#49). Caveat: the main turn and reflection have different tools/system prompts, so they never share cache entries, and moving the context bound breaks the cached message history. Check the new counts after a week to see whether caching pays for its write premium at this usage level.
+
+### Work order
+1. Tests for `project_messages()` (and `split_message`), with `pytest` as a dev dependency.
+2. `AsyncAnthropic` + explicit `concurrent_updates(False)`.
+3. Time out of the system prompt + message caching + cache token counts in `api_call` events.
+4. Read-only connection for `query`.
+
+Separately: Stage 6b/6c (structured logging, health checks) are not done. The `api_call` token counts from step 3 also cover the "check token counts" follow-up from the model upgrade.
 
 ### Ops (outside the repo)
 - [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
@@ -222,5 +235,6 @@ Keep the `httpx` logger at WARNING or above: its INFO lines include Telegram API
 
 ### Rate Limiting
 Protect against rapid Telegram message bursts exhausting API credits:
-- Per-turn debounce or simple in-flight lock so only one turn runs at a time
+- One-turn-at-a-time is already provided by python-telegram-bot's default sequential update handling (see the sync-client TODO). What's missing is protection against *volume*: a burst of N messages still queues N full turns.
+- Options: coalesce messages that arrive while a turn is running into the next turn, or cap turns per time window.
 - Backpressure signal to user if a turn is already running
