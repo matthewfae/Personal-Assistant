@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
 from agent import run_loop
@@ -27,7 +27,7 @@ async def main():
         return
 
     init_db()
-    client = Anthropic(api_key=api_key)
+    client = AsyncAnthropic(api_key=api_key)
 
     test_messages = [
         "Please add a note for me to get coffee.",
