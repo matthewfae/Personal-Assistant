@@ -3,7 +3,7 @@
 ## Layout
 ```
 bot/agent.py              Agent loop, event writing, projection, reflection step, causality tree debug
-bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messages to run_loop
+bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messages to run_loop, sends replies
 bot/main.py               Entry point: starts the Telegram bot
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
@@ -195,6 +195,16 @@ Runs as a mini agent loop after the main turn:
 Shared by both loops. For each `tool_use` block, writes a `tool_call` event, calls the tool, and **always** writes a matching `tool_result` event — even if `mcp.call_tool` raises (the exception text becomes the result with `is_error: true`). This guarantees every `tool_use` in the projection has its `tool_result`; the API rejects a history where one is missing.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
+
+## Telegram Handler (`bot/telegram_handler.py`)
+
+For each message from the allowed user: send a "working…" ack, write a `telegram_ack` event, call `run_loop` under the same `turn_id`, then send `TurnResult.reply` and, if present, `TurnResult.proactive`.
+
+Replies go through `_send_reply()`:
+- `split_message(text)` splits text into chunks of at most 4096 UTF-16 code units (Telegram's limit, counted the way Telegram counts it, so most emoji count as 2). It breaks at the last paragraph break, line break, or space in the second half of the window, and hard-cuts otherwise. It never returns empty chunks.
+- If there is no text (e.g. the turn ended after tool calls), it sends `(done — no reply text)` instead, since Telegram rejects empty messages.
+
+**Logging:** the `httpx` logger is set to WARNING. At INFO it logs every request URL, and Telegram Bot API URLs contain the bot token (`https://api.telegram.org/bot<TOKEN>/...`). Keep it at WARNING or above.
 
 ## MCP Client (`bot/mcp_client.py`)
 

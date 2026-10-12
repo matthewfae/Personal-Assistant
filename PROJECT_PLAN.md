@@ -194,6 +194,8 @@ Findings from a code review. Ordered by priority within each group.
 
 ### Ops (outside the repo)
 - [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
+- [x] **Bot token written to the journal.** `httpx` logged every Telegram API URL at INFO, and those URLs contain the bot token. Fixed: `httpx` logger set to WARNING in `telegram_handler.py`.
+- [ ] **Rotate the Telegram bot token.** The old token is still in past journal entries and was exposed in a Claude Code session. @BotFather → `/revoke` → update `TELEGRAM_BOT_TOKEN` in `.env` → restart the service.
 
 ## Stage 9 (Future) — Security Hardening
 
@@ -215,6 +217,8 @@ Add `logging` calls throughout `agent.py` and `mcp_client.py`:
 - Tool dispatch (name, truncated input)
 - Reflection step outcome (PASS vs. follow-up vs. error)
 - Context bound changes
+
+Keep the `httpx` logger at WARNING or above: its INFO lines include Telegram API URLs, which contain the bot token.
 
 ### Rate Limiting
 Protect against rapid Telegram message bursts exhausting API credits:
