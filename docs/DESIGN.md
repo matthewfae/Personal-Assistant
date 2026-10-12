@@ -175,6 +175,7 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
    - Calls Claude with the history, system prompt (`cache_control: ephemeral`), and filtered tool list. Writes an `api_call` event.
    - On `end_turn`: writes an `assistant_message` event, then calls `_run_reflection()`.
    - On `tool_use`: calls `_execute_tool_calls()` (below), appends results to messages, loops.
+   - On `refusal`: returns a reply saying Claude declined, with the `stop_details` category.
    - On any other stop reason: returns an "Unexpected stop reason" reply.
 7. Returns `TurnResult(reply=final_text, proactive=proactive_text)`.
 8. If the loop hits `_MAX_API_CALLS` (15) without finishing, writes an `error` event (`context: "main_turn"`) and returns a short failure reply.
@@ -230,4 +231,10 @@ Two instances in `agent.py`:
 
 ## Model
 
-Configured in `bot/agent.py` (`_MODEL`). `max_tokens=8192`. `_MAX_API_CALLS = 15` caps API calls per loop (main turn and reflection each).
+Configured in `bot/agent.py`:
+- `_MODEL = "claude-sonnet-5-5"`.
+- `_EFFORT = "medium"`, sent as `output_config.effort` on every call. Sonnet 5.5 runs adaptive thinking by default and thinking is billed as output tokens; effort controls how much it thinks. `"low"` is the next lever for cost.
+- `_MAX_TOKENS = 16000`. Thinking counts toward `max_tokens`, so it is sized above the expected reply length.
+- `_MAX_API_CALLS = 15` caps API calls per loop (main turn and reflection each).
+
+Thinking blocks are kept in the in-memory message list within a turn (`response.content` is appended unchanged) but are not stored in events, so they are not replayed in later turns.
