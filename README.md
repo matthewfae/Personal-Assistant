@@ -18,13 +18,21 @@ prompts/     System prompt template
 docs/        Implementation-level design docs
 tests/       Tests
 scripts/     Helper scripts
-logs/        Runtime log output
 ```
 
 ## Docs
 
 - **`PROJECT_PLAN.md`** — architecture decisions, current stage, upcoming stages.
 - **`docs/DESIGN.md`** — layout, schema, agent flow, and current tool surface.
+
+## Logs
+
+The bot logs to the systemd journal. Each turn writes one summary line (API calls, token counts, duration); problems are logged at WARNING or above.
+
+```
+journalctl -u personal-assistant -f            # follow
+journalctl -u personal-assistant -p warning    # problems only
+```
 
 ## Stack
 

@@ -86,7 +86,7 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 **6a.** `systemd` service — unit file at `scripts/personal-assistant.service`, installed and running. ✓
 
-**6b.** Structured logging — consistent log levels and format across all modules. *(Not started.)*
+**6b.** Logging — one `configure_logging()` per process, journald priorities, per-turn summary line, quiet Telegram network blips, MCP server logs formatted. See `docs/DESIGN.md` → Logging. ✓
 
 **6c.** Basic health checks. *(Not started.)*
 
@@ -203,7 +203,7 @@ Findings from a code review. Ordered by priority within each group.
 3. Time out of the system prompt + message caching + cache token counts in `api_call` events.
 4. Read-only connection for `query`.
 
-Separately: Stage 6b/6c (structured logging, health checks) are not done. The `api_call` token counts from step 3 also cover the "check token counts" follow-up from the model upgrade.
+Separately: Stage 6c (health checks) is not done; 6b (logging) is. The `api_call` token counts from step 3 also cover the "check token counts" follow-up from the model upgrade.
 
 ### Ops (outside the repo)
 - [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.

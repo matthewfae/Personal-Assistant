@@ -5,13 +5,10 @@ All functions return plain dicts (or lists). No MCP types, no
 string formatting for Claude -- that belongs in the tools layer.
 """
 
-import logging
 from datetime import datetime, timezone
 
 from db.connection import get_db
 from db import mutation_log
-
-logger = logging.getLogger(__name__)
 
 
 def _now() -> str:

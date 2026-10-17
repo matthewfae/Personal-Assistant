@@ -6,13 +6,10 @@ the database itself refuses any write, whatever the statement. Returns rows as
 plain dicts. No MCP types, no formatting — that lives in the tools layer.
 """
 
-import logging
 import sqlite3
 from pathlib import Path
 
 from db.connection import get_db_path
-
-logger = logging.getLogger(__name__)
 
 _MAX_ROWS = 200
 

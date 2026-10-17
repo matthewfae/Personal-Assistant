@@ -5,6 +5,8 @@ Implements prompt caching for cost reduction on repeated context.
 """
 
 import json
+import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +18,8 @@ import db.context as context_db
 from db.connection import get_db
 from mcp_client import MCPClient
 from prompt_builder import PromptBuilder, format_time
+
+logger = logging.getLogger(__name__)
 
 _MODEL = "claude-sonnet-5-5"
 
@@ -285,6 +289,7 @@ async def _run_reflection(
                     next_api_call_parent_id = last_tool_result_id
 
             else:
+                logger.warning("Turn %s: reflection hit unexpected stop reason %r", turn_id, response.stop_reason)
                 return None
 
         raise RuntimeError(f"Reflection stopped after {_MAX_API_CALLS} API calls without finishing")
@@ -318,10 +323,67 @@ async def run_loop(
     turn_id may be supplied by the caller (e.g. a transport handler that has
     already written a pre-turn event under the same id). If omitted, a fresh
     UUID is generated.
+
+    Logs a one-line summary of the turn when it ends, whether or not it succeeded.
     """
     if turn_id is None:
         turn_id = uuid.uuid4().hex
 
+    start = time.monotonic()
+    try:
+        return await _run_turn(client, mcp, user_message, turn_id)
+    finally:
+        _log_turn_summary(turn_id, time.monotonic() - start)
+
+
+_TOKEN_FIELDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
+
+
+def _log_turn_summary(turn_id: str, elapsed: float) -> None:
+    """Log the turn's API call count and token totals, and a WARNING per error event.
+
+    Reads the turn's events back from the DB, so it covers the reflection step
+    too. Failures here are logged and swallowed; they must not affect the turn.
+    """
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, type, payload FROM events "
+                "WHERE turn_id = ? AND type IN ('api_call', 'error') ORDER BY id",
+                (turn_id,),
+            ).fetchall()
+
+        api_calls = 0
+        totals = dict.fromkeys(_TOKEN_FIELDS, 0)
+        for row in rows:
+            payload = json.loads(row["payload"])
+            if row["type"] == "api_call":
+                api_calls += 1
+                for field in _TOKEN_FIELDS:
+                    totals[field] += payload.get(field) or 0
+            else:
+                logger.warning(
+                    "Turn %s: %s error (event id=%d): %s",
+                    turn_id, payload.get("context"), row["id"], payload.get("message"),
+                )
+
+        logger.info(
+            "Turn %s finished in %.1fs: %d API calls, tokens in=%d cache_read=%d cache_write=%d out=%d",
+            turn_id, elapsed, api_calls,
+            totals["input_tokens"], totals["cache_read_input_tokens"],
+            totals["cache_creation_input_tokens"], totals["output_tokens"],
+        )
+    except Exception:
+        logger.exception("Could not summarize turn %s", turn_id)
+
+
+async def _run_turn(
+    client: AsyncAnthropic,
+    mcp: MCPClient,
+    user_message: str,
+    turn_id: str,
+) -> TurnResult:
+    """Body of run_loop; see its docstring."""
     with get_db() as conn:
         user_message_id = write_event(
             conn, turn_id, "user_message",
@@ -396,9 +458,11 @@ async def run_loop(
 
         elif response.stop_reason == "refusal":
             category = response.stop_details.category if response.stop_details else None
+            logger.warning("Turn %s: Claude refused (category: %s)", turn_id, category)
             return TurnResult(reply=f"Claude declined this request (category: {category}).", proactive=None)
 
         else:
+            logger.warning("Turn %s: unexpected stop reason %r", turn_id, response.stop_reason)
             return TurnResult(reply=f"Unexpected stop reason: {response.stop_reason}", proactive=None)
 
     message = f"Stopped after {_MAX_API_CALLS} API calls without a final response"

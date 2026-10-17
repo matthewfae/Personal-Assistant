@@ -208,7 +208,18 @@ Replies go through `_send_reply()`:
 
 **One turn at a time:** the application is built with `concurrent_updates(False)` (python-telegram-bot's default, set explicitly). Updates are handled sequentially, so a message that arrives mid-turn waits for the current turn to finish. Turns must not overlap: they would interleave events and race on the context bound. Enabling concurrent updates requires a lock around `run_loop`.
 
-**Logging:** the `httpx` logger is set to WARNING. At INFO it logs every request URL, and Telegram Bot API URLs contain the bot token (`https://api.telegram.org/bot<TOKEN>/...`). Keep it at WARNING or above.
+**Polling errors:** `start_polling` gets `_on_polling_error` as its `error_callback`. Transient network errors (Telegram returning 502, dropped connections) are logged as a one-line WARNING; python-telegram-bot retries them on its own. Other errors, including `BadRequest` (which subclasses `NetworkError`), keep their traceback.
+
+## Logging (`bot/log_setup.py`)
+
+Each process configures logging once, at its entry point, with `configure_logging()`: `bot/main.py`, `bot/harness.py`, and `tools/server.py`. Library modules only create loggers. Everything goes to stderr (in the MCP server, stdout carries the protocol).
+
+- **Journal vs terminal.** When stderr is the systemd journal (detected by matching `JOURNAL_STREAM` against stderr's device and inode), every line, traceback lines included, is prefixed with a syslog priority (`<3>` error, `<4>` warning, `<6>` info). journald strips the prefix and stores the real level, so `journalctl -p warning` works. No timestamp, since journald adds one. In a terminal, lines carry a timestamp instead.
+- **MCP server.** The MCP SDK passes the server subprocess only an allowlist of environment variables, so `mcp_client` adds `JOURNAL_STREAM` explicitly. The server inherits the bot's stderr. The SDK's own `mcp` logger is set to WARNING; at INFO it logs every request.
+- **`httpx` is set to WARNING.** At INFO it logs every request URL, and Telegram Bot API URLs contain the bot token (`https://api.telegram.org/bot<TOKEN>/...`). Keep it at WARNING or above.
+- **Turn summary.** `run_loop` logs one INFO line when a turn ends, success or not: API call count and token totals (main turn plus reflection), read back from the turn's `api_call` events. Each `error` event in the turn is also logged as a WARNING with its event id. Refusals and unexpected stop reasons are logged as warnings.
+
+The events table remains the detailed record of what happened in a turn; the journal is for process-level activity and a quick view of turns.
 
 ## MCP Client (`bot/mcp_client.py`)
 

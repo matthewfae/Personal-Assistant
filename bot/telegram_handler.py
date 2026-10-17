@@ -27,10 +27,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
 from agent import run_loop, TurnResult, write_event
 from db.connection import get_db, init_db
+from log_setup import configure_logging
 from mcp_client import mcp_client
 
 load_dotenv()
@@ -45,13 +47,6 @@ _TELEGRAM_MAX_LEN = 4096
 # no text). Telegram rejects empty messages.
 _EMPTY_REPLY_PLACEHOLDER = "(done \u2014 no reply text)"
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-# httpx logs every request URL at INFO, and Telegram API URLs contain the bot
-# token. Raise it to WARNING so the token never lands in the journal.
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -95,6 +90,20 @@ def split_message(text: str, limit: int = _TELEGRAM_MAX_LEN) -> list[str]:
         text = text[cut:].lstrip()
     chunks.append(text)
     return [c for c in chunks if c.strip()]
+
+
+def _on_polling_error(exc: TelegramError) -> None:
+    """Log an error from polling Telegram for updates. python-telegram-bot retries on its own.
+
+    Network errors (a 502 from Telegram, a dropped connection) are routine and
+    transient, so they get one WARNING line instead of a full traceback.
+    Anything else is logged with its traceback. BadRequest subclasses
+    NetworkError but means the request itself was wrong, so it is excluded.
+    """
+    if isinstance(exc, NetworkError) and not isinstance(exc, BadRequest):
+        logger.warning("Polling Telegram failed, retrying: %s", exc)
+    else:
+        logger.error("Polling Telegram failed, retrying", exc_info=exc)
 
 
 async def _send_reply(update: Update, text: str) -> None:
@@ -155,7 +164,7 @@ async def main() -> None:
 
         async with app:
             await app.start()
-            await app.updater.start_polling()
+            await app.updater.start_polling(error_callback=_on_polling_error)
 
             stop_event = asyncio.Event()
             loop = asyncio.get_event_loop()
@@ -171,4 +180,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    configure_logging()
     asyncio.run(main())
