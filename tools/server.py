@@ -23,6 +23,7 @@ import mcp.server.stdio
 import mcp.types as types
 from mcp.server.lowlevel.server import Server
 
+from bot.log_setup import configure_logging
 from db.connection import init_db
 import db.context as context_db
 import db.tasks as tasks_db
@@ -462,4 +463,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Logs go to stderr; stdout carries the MCP protocol and must stay clean.
+    configure_logging()
+    # The MCP SDK logs every request at INFO ("Processing request of type ...").
+    logging.getLogger("mcp").setLevel(logging.WARNING)
     asyncio.run(main())

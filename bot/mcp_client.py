@@ -4,6 +4,7 @@ interface for the agent to list tools and dispatch tool calls.
 """
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from mcp.client.session import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.stdio import StdioServerParameters, get_default_environment, stdio_client
 
 # Absolute path to the server script, regardless of working directory
 _TOOLS_SERVER = Path(__file__).parent.parent / "tools" / "server.py"
@@ -47,6 +48,19 @@ class MCPClient:
         return ToolOutput(content="\n".join(parts), is_error=bool(result.isError))
 
 
+def _server_env() -> dict[str, str]:
+    """Environment for the server subprocess.
+
+    The MCP SDK passes only a short allowlist of variables (HOME, PATH, ...).
+    Add JOURNAL_STREAM so the server, whose stderr is inherited from the bot,
+    can tell it is writing to the journal and format its logs to match.
+    """
+    env = get_default_environment()
+    if "JOURNAL_STREAM" in os.environ:
+        env["JOURNAL_STREAM"] = os.environ["JOURNAL_STREAM"]
+    return env
+
+
 @asynccontextmanager
 async def mcp_client():
     """
@@ -62,6 +76,7 @@ async def mcp_client():
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[str(_TOOLS_SERVER)],
+        env=_server_env(),
     )
 
     async with stdio_client(server_params) as (read_stream, write_stream):

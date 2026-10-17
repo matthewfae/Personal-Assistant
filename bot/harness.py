@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from agent import run_loop
 from db.connection import init_db
+from log_setup import configure_logging
 from mcp_client import mcp_client
 
 load_dotenv()
@@ -45,4 +46,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    configure_logging()
     asyncio.run(main())
