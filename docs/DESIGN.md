@@ -3,8 +3,9 @@
 ## Layout
 ```
 bot/agent.py              Agent loop, event writing, projection, reflection step, causality tree debug
-bot/telegram_handler.py   Telegram long-polling bot: allowlist, ack, wires messages to run_loop, sends replies
-bot/main.py               Entry point: starts the Telegram bot
+bot/core.py               Assistant core: turn queue + single worker that runs turns and delivers output to channels
+bot/telegram_handler.py   Telegram channel adapter: allowlist, ack, submits messages to the core, delivers replies
+bot/main.py               Entry point: owns the Anthropic client and MCP session, starts the core and plugs in Telegram
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
 bot/prompt_builder.py     Loads prompt templates from prompts/; format_time() for message timestamps
@@ -198,15 +199,23 @@ Shared by both loops. For each `tool_use` block, writes a `tool_call` event, cal
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
 
-## Telegram Handler (`bot/telegram_handler.py`)
+## Core (`bot/core.py`)
 
-For each message from the allowed user: send a "working…" ack, write a `telegram_ack` event, call `run_loop` under the same `turn_id`, then send `TurnResult.reply` and, if present, `TurnResult.proactive`.
+The core is the master; channels plug into it. `bot/main.py` creates the Anthropic client and MCP session, builds a `Core` around them, and registers channels. Channels import the core, never the reverse.
 
-Replies go through `_send_reply()`:
+**One turn at a time:** every turn goes through one `asyncio.Queue` drained by a single worker task. Turns must not overlap: they would interleave events and race on the context bound. A message that arrives mid-turn waits in the queue. (python-telegram-bot's `concurrent_updates` no longer matters for this; the Telegram handler only acks and enqueues.)
+
+**Channel interface:** a channel has a `name` and an async `deliver(text)`. Inbound, it calls `core.submit(text, channel, turn_id=None)`, which queues the turn and returns immediately. The worker runs `run_loop`, then delivers `TurnResult.reply` and, if present, `TurnResult.proactive` to the originating channel. If `run_loop` raises, the channel gets "Something went wrong. Please try again." Exceptions from `run_loop` or `deliver` are logged and never kill the worker.
+
+**Shutdown:** `Core.stop()` lets the in-flight turn finish rather than cancelling it — cancelling mid-tool-call would leave a `tool_call` with no `tool_result`. Turns still queued are dropped with a WARNING; their `user_message` events were never written, so history stays consistent (their `telegram_ack` events remain). `main.py` nests the context managers so shutdown runs: stop Telegram polling → stop the core → shut down the Telegram bot (the in-flight turn can still deliver).
+
+## Telegram Channel (`bot/telegram_handler.py`)
+
+`TelegramChannel` is the Telegram adapter. For each message from the allowed user: send a "working…" ack, write a `telegram_ack` event, and submit the message to the core under the same `turn_id`. The handler returns right away.
+
+`deliver(text)` sends to the allowed user's private chat (the chat id equals the user id), so it doesn't need an incoming message to reply to:
 - `split_message(text)` splits text into chunks of at most 4096 UTF-16 code units (Telegram's limit, counted the way Telegram counts it, so most emoji count as 2). It breaks at the last paragraph break, line break, or space in the second half of the window, and hard-cuts otherwise. It never returns empty chunks.
 - If there is no text (e.g. the turn ended after tool calls), it sends `(done — no reply text)` instead, since Telegram rejects empty messages.
-
-**One turn at a time:** the application is built with `concurrent_updates(False)` (python-telegram-bot's default, set explicitly). Updates are handled sequentially, so a message that arrives mid-turn waits for the current turn to finish. Turns must not overlap: they would interleave events and race on the context bound. Enabling concurrent updates requires a lock around `run_loop`.
 
 **Polling errors:** `start_polling` gets `_on_polling_error` as its `error_callback`. Transient network errors (Telegram returning 502, dropped connections) are logged as a one-line WARNING; python-telegram-bot retries them on its own. Other errors, including `BadRequest` (which subclasses `NetworkError`), keep their traceback.
 
