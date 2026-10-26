@@ -5,6 +5,10 @@ Channels (Telegram today) are thin adapters around the core. A channel submits
 inbound messages with `Core.submit()` and implements `deliver()` for outbound
 text. The core never imports a channel.
 
+Wake-ups (`Core.submit_wakeup()`) are turns with no inbound message. They are
+silent: the reply is not delivered anywhere. To reach the user, Claude calls
+the notify_user tool, which delivers to the primary channel.
+
 Every turn goes through one asyncio.Queue drained by a single worker, so turns
 never overlap. Concurrent turns would interleave their events and race on the
 context bound. A message that arrives mid-turn waits in the queue.
@@ -19,7 +23,8 @@ from typing import Protocol
 
 from anthropic import AsyncAnthropic
 
-from agent import run_loop
+from agent import LocalTool, run_loop
+from jobs import Job
 from mcp_client import MCPClient
 
 logger = logging.getLogger(__name__)
@@ -38,11 +43,27 @@ class Channel(Protocol):
         ...
 
 
+_NOTIFY_USER_DEFINITION = {
+    "name": "notify_user",
+    "description": (
+        "Send Matt a message. Only available in wake-up turns, whose final reply is not "
+        "sent to anyone; this is the only way to reach him. Use it only when it's worth "
+        "interrupting him."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "The message to send."}},
+        "required": ["text"],
+    },
+}
+
+
 @dataclass
 class _Turn:
     text: str
-    channel: Channel
+    channel: Channel | None  # None for wake-ups
     turn_id: str
+    job: str | None = None
 
 
 class Core:
@@ -53,6 +74,8 @@ class Core:
         self._queue: asyncio.Queue[_Turn | None] = asyncio.Queue()
         self._worker: asyncio.Task | None = None
         self._stopping = False
+        # Where unprompted messages (notify_user) go.
+        self.primary_channel: Channel | None = None
 
     def submit(self, text: str, channel: Channel, turn_id: str | None = None) -> str:
         """Queue a user message as a turn. Returns the turn_id.
@@ -64,6 +87,15 @@ class Core:
             raise RuntimeError("Core is stopping; not accepting new turns")
         turn = _Turn(text=text, channel=channel, turn_id=turn_id or uuid.uuid4().hex)
         self._queue.put_nowait(turn)
+        return turn.turn_id
+
+    def submit_wakeup(self, job: Job) -> str:
+        """Queue a silent wake-up turn for job. Returns the turn_id."""
+        if self._stopping:
+            raise RuntimeError("Core is stopping; not accepting new turns")
+        turn = _Turn(text=job.prompt, channel=None, turn_id=uuid.uuid4().hex, job=job.name)
+        self._queue.put_nowait(turn)
+        logger.info("Turn %s: wake-up queued for job %s", turn.turn_id, job.name)
         return turn.turn_id
 
     def start(self) -> None:
@@ -110,6 +142,9 @@ class Core:
 
     async def _process(self, turn: _Turn) -> None:
         """Run one turn and deliver its output. Never raises, so one bad turn can't kill the worker."""
+        if turn.job is not None:
+            await self._process_wakeup(turn)
+            return
         try:
             result = await run_loop(self._client, self._mcp, turn.text, turn_id=turn.turn_id)
         except Exception:
@@ -120,6 +155,22 @@ class Core:
         await self._deliver(turn.channel, result.reply, turn.turn_id)
         if result.proactive:
             await self._deliver(turn.channel, result.proactive, turn.turn_id)
+
+    async def _process_wakeup(self, turn: _Turn) -> None:
+        async def notify_user(tool_input: dict) -> str:
+            if self.primary_channel is None:
+                raise RuntimeError("No primary channel configured")
+            await self.primary_channel.deliver(tool_input["text"])
+            return "Sent."
+
+        try:
+            await run_loop(
+                self._client, self._mcp, turn.text, turn_id=turn.turn_id, job=turn.job,
+                local_tools=[LocalTool(_NOTIFY_USER_DEFINITION, notify_user)],
+            )
+        except Exception:
+            # Silent by design: a failed wake-up is logged, not sent to the user.
+            logger.exception("Turn %s: wake-up %s raised an exception", turn.turn_id, turn.job)
 
     async def _deliver(self, channel: Channel, text: str, turn_id: str) -> None:
         try:

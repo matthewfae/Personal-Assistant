@@ -6,7 +6,7 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Stages 1–8 are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. After each reply, a reflection step lets Claude trim the context window (`set_context_bound`), use tools, or send a follow-up message. Claude manages tasks, a shopping list, and symptom logs through MCP tools, and can run read-only SQL over any table. The bot runs as a `systemd` service. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
+Stages 1–8 and 10a–10b are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. After each reply, a reflection step lets Claude trim the context window (`set_context_bound`), use tools, or send a follow-up message. Claude manages tasks, a shopping list, and symptom logs through MCP tools, and can run read-only SQL over any table. Wake-up turns let Claude act without a message: an HTTPS webhook (`https://pa.mattfae.com/hooks/<name>`, behind Caddy) starts a job such as `arrived_home`, and Claude messages the user only if it calls `notify_user`. The bot runs as a `systemd` service. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
 
 ## Repository layout
 

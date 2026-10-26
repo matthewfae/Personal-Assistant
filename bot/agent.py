@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -45,6 +46,18 @@ class TurnResult:
     proactive: str | None
 
 
+@dataclass
+class LocalTool:
+    """A tool run in-process by the agent instead of through the MCP server.
+
+    For tools that need the running process, such as notify_user, which sends
+    through a channel. `handler` takes the tool input and returns the result text.
+    """
+
+    definition: dict  # Anthropic API tool definition
+    handler: Callable[[dict], Awaitable[str]]
+
+
 def write_event(conn, turn_id, event_type, payload, parent_event_id=None, timestamp=None) -> int:
     """Insert one event row and return its id. conn must be an open sqlite3 connection.
 
@@ -77,6 +90,11 @@ def _api_call_payload(response) -> dict:
     }
 
 
+def render_wakeup(job: str, prompt: str) -> str:
+    """Text of a wake-up turn root as Claude sees it (before the timestamp prefix)."""
+    return f"(wake-up: {job})\n{prompt}"
+
+
 def _timestamped(text: str, timestamp: str) -> str:
     """Prefix a user message with the time it was sent.
 
@@ -89,9 +107,9 @@ def _timestamped(text: str, timestamp: str) -> str:
 def project_messages(from_event_id: int = 0) -> list[dict]:
     """Build the messages array from events at or after from_event_id.
 
-    Reconstructs the full interleaved sequence: user messages, tool use/result
-    pairs (grouped by api_call), and final assistant messages. Each user
-    message is prefixed with its send time (see _timestamped).
+    Reconstructs the full interleaved sequence: turn roots (user messages and
+    wake-ups), tool use/result pairs (grouped by api_call), and final assistant
+    messages. Each turn root is prefixed with its time (see _timestamped).
     """
     with get_db() as conn:
         rows = conn.execute(
@@ -99,7 +117,7 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
             SELECT id, timestamp, type, parent_event_id, payload
             FROM events
             WHERE id >= ?
-              AND type IN ('user_message', 'api_call', 'tool_call', 'tool_result', 'assistant_message')
+              AND type IN ('user_message', 'wakeup', 'api_call', 'tool_call', 'tool_result', 'assistant_message')
             ORDER BY id ASC
             """,
             (from_event_id,),
@@ -126,6 +144,10 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
 
         if etype == "user_message":
             messages.append({"role": "user", "content": _timestamped(payload["content"], row["timestamp"])})
+
+        elif etype == "wakeup":
+            text = render_wakeup(payload["job"], payload["prompt"])
+            messages.append({"role": "user", "content": _timestamped(text, row["timestamp"])})
 
         elif etype == "api_call":
             tool_calls = tool_calls_by_api.get(row["id"], [])
@@ -175,8 +197,11 @@ async def _execute_tool_calls(
     turn_id: str,
     response,
     api_call_id: int,
+    local_tools: dict[str, LocalTool] | None = None,
 ) -> tuple[list[dict], int | None]:
     """Run every tool_use block in response, writing tool_call/tool_result events.
+
+    Tools named in local_tools run in-process; everything else goes to MCP.
 
     Returns (tool_result blocks for the next request, id of the last tool_result event).
 
@@ -197,8 +222,11 @@ async def _execute_tool_calls(
                 "input": block.input,
             }, parent_event_id=api_call_id)
         try:
-            output = await mcp.call_tool(block.name, block.input)
-            content, is_error = output.content, output.is_error
+            if local_tools and block.name in local_tools:
+                content, is_error = await local_tools[block.name].handler(block.input), False
+            else:
+                output = await mcp.call_tool(block.name, block.input)
+                content, is_error = output.content, output.is_error
         except Exception as e:
             content, is_error = f"Tool call failed: {type(e).__name__}: {e}", True
         with get_db() as conn:
@@ -311,14 +339,22 @@ async def run_loop(
     mcp: MCPClient,
     user_message: str,
     turn_id: str | None = None,
+    job: str | None = None,
+    local_tools: list[LocalTool] | None = None,
 ) -> TurnResult:
     """
-    Run the agent loop for one user turn.
+    Run the agent loop for one turn.
 
-    Projects the message history from the events table, appends the new user
-    message, runs until Claude produces a final text response, then runs the
+    Projects the message history from the events table, appends the new turn
+    root, runs until Claude produces a final text response, then runs the
     reflection step. Returns a TurnResult with the reply and optional proactive
     follow-up text.
+
+    If job is given, this is a wake-up turn: user_message is the job's prompt,
+    the root event is `wakeup` instead of `user_message`, and the reflection
+    step is skipped (a wake-up's reply is not sent anywhere, so there is
+    nothing to follow up on). local_tools are offered to Claude alongside the
+    MCP tools and run in-process (e.g. notify_user for wake-ups).
 
     turn_id may be supplied by the caller (e.g. a transport handler that has
     already written a pre-turn event under the same id). If omitted, a fresh
@@ -331,7 +367,7 @@ async def run_loop(
 
     start = time.monotonic()
     try:
-        return await _run_turn(client, mcp, user_message, turn_id)
+        return await _run_turn(client, mcp, user_message, turn_id, job, local_tools or [])
     finally:
         _log_turn_summary(turn_id, time.monotonic() - start)
 
@@ -382,29 +418,43 @@ async def _run_turn(
     mcp: MCPClient,
     user_message: str,
     turn_id: str,
+    job: str | None,
+    local_tools: list[LocalTool],
 ) -> TurnResult:
     """Body of run_loop; see its docstring."""
     with get_db() as conn:
-        user_message_id = write_event(
-            conn, turn_id, "user_message",
-            {"v": 1, "content": user_message},
-            parent_event_id=None,
-        )
+        if job is None:
+            root_id = write_event(
+                conn, turn_id, "user_message",
+                {"v": 1, "content": user_message},
+                parent_event_id=None,
+            )
+        else:
+            root_id = write_event(
+                conn, turn_id, "wakeup",
+                {"v": 1, "job": job, "prompt": user_message},
+                parent_event_id=None,
+            )
 
-    # Project after writing the user_message, so the new message is rendered from
-    # its stored timestamp exactly as later turns will render it.
+    # Project after writing the root, so it is rendered from its stored
+    # timestamp exactly as later turns will render it.
     from_event_id = _load_from_event_id()
     messages = project_messages(from_event_id)
 
-    # For the first api_call, parent is the user_message.
+    # For the first api_call, parent is the turn root.
     # For subsequent api_calls, parent is the last tool_result written in the previous round.
-    next_api_call_parent_id: int = user_message_id
+    next_api_call_parent_id: int = root_id
 
     # set_context_bound is a reflection-step tool; hide it from the main turn.
-    # Re-attach cache_control to the new last tool so caching is preserved.
-    main_tools = [t for t in mcp.tools if t["name"] != "set_context_bound"]
-    if main_tools and not main_tools[-1].get("cache_control"):
-        main_tools = [*main_tools[:-1], {**main_tools[-1], "cache_control": {"type": "ephemeral"}}]
+    # Local tools go last. Re-attach cache_control to the new last tool so the
+    # whole tool list stays cached.
+    main_tools = [
+        {k: v for k, v in t.items() if k != "cache_control"}
+        for t in mcp.tools if t["name"] != "set_context_bound"
+    ] + [t.definition for t in local_tools]
+    if main_tools:
+        main_tools[-1] = {**main_tools[-1], "cache_control": {"type": "ephemeral"}}
+    local_tools_by_name = {t.definition["name"]: t for t in local_tools}
 
     for _ in range(_MAX_API_CALLS):
         response = await client.messages.create(
@@ -444,12 +494,14 @@ async def _run_turn(
                     {"v": 1, "content": final_text},
                     parent_event_id=api_call_id,
                 )
+            if job is not None:
+                return TurnResult(reply=final_text, proactive=None)
             proactive_text = await _run_reflection(client, mcp, turn_id, assistant_message_event_id)
             return TurnResult(reply=final_text, proactive=proactive_text)
 
         elif response.stop_reason == "tool_use":
             tool_results, last_tool_result_id = await _execute_tool_calls(
-                mcp, turn_id, response, api_call_id,
+                mcp, turn_id, response, api_call_id, local_tools_by_name,
             )
             messages.append({"role": "user", "content": tool_results})
             # Next api_call's parent is the last tool_result written in this round.
@@ -469,7 +521,7 @@ async def _run_turn(
     with get_db() as conn:
         write_event(
             conn, turn_id, "error",
-            {"v": 1, "context": "main_turn", "message": message},
+            {"v": 1, "context": "main_turn" if job is None else "wakeup", "message": message},
             parent_event_id=next_api_call_parent_id,
         )
     return TurnResult(reply=f"{message}. Try rephrasing or breaking the request up.", proactive=None)

@@ -249,7 +249,7 @@ Every job leaves events, so "no `wakeup` event in 25 hours" is a liveness signal
 ### Steps (draft)
 
 **10a.** ✓ Core: owns client, MCP session, turn queue + single worker. Telegram handler becomes an adapter that submits to the queue and implements `deliver`. No behavior change. Done as a module, `bot/core.py`, not a package — `bot/` modules import each other flat, and a package can come when the core grows. In-flight turns finish on shutdown; queued ones are dropped.
-**10b.** `wakeup` turn root, `run_loop` generalization, `project_messages` rendering, `notify_user` tool.
+**10b.** ✓ `wakeup` turn root, `run_loop` generalization, `project_messages` rendering, `notify_user` tool. Done, plus a first trigger ahead of the scheduler: a webhook listener (`bot/webhooks.py`) behind Caddy at `https://pa.mattfae.com/hooks/<name>`, bearer-token auth, per-hook cooldown. First job: `arrived_home`, fired by an iPhone arrival automation. Wake-ups skip the reflection step.
 **10c.** Scheduler + job table; first job: nightly consolidation. Hard-cap backstop in `project_messages`.
 **10d.** Remove reflection step.
 **10e.** Liveness check + `OnFailure=`.

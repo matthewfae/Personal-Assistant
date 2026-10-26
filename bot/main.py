@@ -2,7 +2,8 @@
 Entry point for the Personal Assistant.
 
 Starts the assistant core (Anthropic client, MCP session, turn queue), then
-plugs in the Telegram channel, and runs until SIGINT/SIGTERM.
+plugs in the Telegram channel and, if WEBHOOK_TOKEN is set, the webhook
+listener, and runs until SIGINT/SIGTERM.
 """
 
 import asyncio
@@ -10,6 +11,7 @@ import logging
 import os
 import signal
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -22,6 +24,7 @@ from db.connection import init_db
 from log_setup import configure_logging
 from mcp_client import mcp_client
 from telegram_handler import REQUIRED_ENV_VARS as TELEGRAM_ENV_VARS, TelegramChannel
+from webhooks import WebhookServer
 
 load_dotenv()
 
@@ -41,11 +44,19 @@ async def main() -> None:
     async with mcp_client() as mcp:
         core = Core(client, mcp)
         telegram = TelegramChannel.from_env(core)
+        core.primary_channel = telegram
 
-        # Shutdown runs inside-out: stop polling so no new messages arrive, then
-        # let the core finish its in-flight turn (which still delivers through
-        # the bot), then shut the bot down.
-        async with telegram.running(), core.running(), telegram.polling():
+        webhook_token = os.environ.get("WEBHOOK_TOKEN")
+        if webhook_token:
+            webhooks = WebhookServer(core, webhook_token).running()
+        else:
+            logger.warning("WEBHOOK_TOKEN not set; webhook listener disabled")
+            webhooks = nullcontext()
+
+        # Shutdown runs inside-out: stop polling and webhooks so no new turns
+        # arrive, then let the core finish its in-flight turn (which still
+        # delivers through the bot), then shut the bot down.
+        async with telegram.running(), core.running(), telegram.polling(), webhooks:
             stop_event = asyncio.Event()
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
