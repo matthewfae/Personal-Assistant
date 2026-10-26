@@ -88,7 +88,7 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 **6b.** Logging — one `configure_logging()` per process, journald priorities, per-turn summary line, quiet Telegram network blips, MCP server logs formatted. See `docs/DESIGN.md` → Logging. ✓
 
-**6c.** Basic health checks. *(Not started.)*
+**6c.** Basic health checks. *(Not started — folded into Stage 10.)*
 
 ## Completed: Stage 7 — Reflection Step ✓
 
@@ -196,6 +196,7 @@ Findings from a code review. Ordered by priority within each group.
   - *Fix:* move the time out of the system prompt rather than rounding it. Rounding to the hour would lose the minute precision Claude needs for "remind me in 20 minutes" or "what can I do before 5?". Instead, `project_messages` prefixes each user message with its send time, taken from the event's own (immutable) `timestamp`, so the rendered history is byte-stable across turns. The reflection trigger carries the current time the same way. Both system prompts become fully static.
   - *Also:* there is currently no cache breakpoint on `messages`, so every API call pays full price for the whole history — including the 2nd–15th calls within a single tool-using turn. Add top-level automatic caching (`cache_control={"type": "ephemeral"}` on `messages.create`), and record `cache_read_input_tokens` / `cache_creation_input_tokens` in `api_call` events so cache hits can actually be verified.
   - Done (#49). Caveat: the main turn and reflection have different tools/system prompts, so they never share cache entries, and moving the context bound breaks the cached message history. Check the new counts after a week to see whether caching pays for its write premium at this usage level.
+  - *Checked 2026-10-26* (5 turns, 21 calls since #49): caching saves ~39% net of the write premium (~60–65% of input tokens are cache reads, almost all within a turn; the 5-minute TTL usually expires between turns). Cache writes are now 64% of spend. Cost per turn is flat at ~3¢ vs ~2.8¢ on Sonnet 4.6: lower prices and caching were offset by prompts roughly doubling (~4.7K vs ~2.4K tokens per call) and thinking output (~188 vs ~79 output tokens per call). Pre-#49 events didn't record cache tokens, so the old figure is approximate. Total spend since April is ~$2; no further tuning warranted at this volume.
 
 ### Work order
 1. Tests for `project_messages()` (and `split_message`), with `pytest` as a dev dependency.
@@ -209,6 +210,50 @@ Separately: Stage 6c (health checks) is not done; 6b (logging) is. The `api_call
 - [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
 - [x] **Bot token written to the journal.** `httpx` logged every Telegram API URL at INFO, and those URLs contain the bot token. Fixed: `httpx` logger set to WARNING in `telegram_handler.py`.
 - [x] **Rotate the Telegram bot token.** The old token was in past journal entries and was exposed in a Claude Code session. Revoked via @BotFather and replaced in `.env` (2026-10-12).
+
+## Stage 10 (Next) — Core Service & Scheduled Wake-ups
+
+Claude should be able to wake on a timer, get a prompt, and pick from a repertoire of jobs, not only react to Telegram messages. That requires inverting the process: today `telegram_handler.main()` is the entry point and owns the Anthropic client, the MCP session and turn serialization. Instead, the **assistant core is the master** and Telegram is one comms channel plugged into it.
+
+### Design
+
+**Core owns the process.** A `core/` package (name TBD) owns startup, the Anthropic client, the MCP session, the scheduler and a single **turn queue**. `bot/main.py` (or its replacement) starts the core and then registers channels.
+
+**One turn queue serializes everything.** Every turn — user message or wake-up — is submitted to one `asyncio.Queue` drained by a single worker. This replaces the implicit guarantee from `concurrent_updates(False)`, which only serializes Telegram updates; scheduled jobs would otherwise run concurrently with a user turn, interleaving events and racing on the context bound. The queue also gives the Rate Limiting deferred item a natural home (coalesce messages that arrive while a turn is running).
+
+**Channels are thin adapters.** A channel does two things: submits inbound messages to the core, and delivers outbound text. Minimal interface: `core.submit(text, channel)` inbound; `channel.deliver(text)` outbound. Replies go back to the originating channel; unprompted messages from wake-ups go to a configured primary channel (Telegram). This supersedes Stage 5's "no shared channel abstraction" — outbound delivery from the core now needs one. Keep it this small; transport specifics (ack messages, splitting, placeholders) stay in the adapter.
+
+**Same process for now.** Core and Telegram adapter run in one process with a clean module boundary (the adapter imports the core, never the reverse). Split into separate processes with an IPC/HTTP API only when a second channel needs it — until then that adds auth, a protocol and a second systemd unit for no gain.
+
+**Wake-ups are turns.** New turn-root event type `wakeup` (`{"v": 1, "job": "<name>", "prompt": "..."}`), parallel to `user_message`. `run_loop` is generalized to start from either root; everything downstream (api_call / tool_call / tool_result, causality, logging) is unchanged, so the events table is a full audit of what each job did. `project_messages` renders wake-up roots so Claude can see past jobs.
+
+**Wake-ups are silent by default.** A wake-up turn's final text is not sent anywhere. To reach the user, Claude calls a `notify_user(text)` tool (wake-up turns only). This avoids the `PASS`-sentinel failure mode — reflection leaked "…PASS" to the user twice and wrote 13 empty `assistant_message` events. Stage 7's argument against a send-message tool applies to replies, where speaking is the norm; for wake-ups, silence is the norm.
+
+**Scheduler.** In-process, owned by the core — not python-telegram-bot's `JobQueue`, which belongs to the channel. A small asyncio loop over a job table (name, schedule, prompt) is enough; APScheduler if schedules get complex. Jobs are defined in code/config at first.
+
+### Jobs
+
+- **Nightly consolidation** (replaces the reflection step's context management). Claude reviews the day's events, writes anything durable (decisions, preferences, facts) into tables, *then* advances the projection bound. Trimming after saving loses nothing — unlike today, where reflection once trimmed too aggressively and lost the shopping list it had just shown.
+- **Hard cap backstop.** `project_messages` also enforces a fixed maximum (e.g. last 30 turns) so a failing consolidation job can't let history grow unbounded.
+- Later: morning brief, overdue/stale tasks, symptom pattern review.
+- **Cost:** a wake-up costs about what a turn does (~3¢). Daily ≈ $1/month; hourly ≈ $20/month. Start with a few per day.
+
+### Retire the reflection step
+
+Data from 58 reflections: 48 were `set_context_bound` only, ~3 did real tidy-up work, and 7 produced follow-up messages — 3 of them correcting confusion caused by the split itself (the main turn can't see `set_context_bound`, so it tells the user the tool doesn't exist). Once nightly consolidation owns the bound: delete `_run_reflection`, `prompts/reflection.md` and `TurnResult.proactive`; keep `set_context_bound` but expose it only to the consolidation job. Add a line to the main prompt to tidy related items before finishing. Halves API calls per turn and gives one shared prompt-cache prefix.
+
+### Health checks (absorbs Stage 6c)
+
+Every job leaves events, so "no `wakeup` event in 25 hours" is a liveness signal. Pair with systemd `OnFailure=` for crashes. Alerting must not depend only on the process being checked — a cheap external check (cron or a heartbeat service) is needed for "the whole box is down".
+
+### Steps (draft)
+
+**10a.** Core package: owns client, MCP session, turn queue + single worker. Telegram handler becomes an adapter that submits to the queue and implements `deliver`. No behavior change.
+**10b.** `wakeup` turn root, `run_loop` generalization, `project_messages` rendering, `notify_user` tool.
+**10c.** Scheduler + job table; first job: nightly consolidation. Hard-cap backstop in `project_messages`.
+**10d.** Remove reflection step.
+**10e.** Liveness check + `OnFailure=`.
+**10f.** More jobs.
 
 ## Stage 9 (Future) — Security Hardening
 
