@@ -17,7 +17,7 @@ db/          SQLite access layer (connection, schema, tables, mutation log)
 prompts/     System prompt template
 docs/        Implementation-level design docs
 tests/       Tests
-scripts/     Helper scripts
+scripts/     systemd unit, Caddyfile and other host config
 ```
 
 ## Docs
@@ -33,6 +33,16 @@ The bot logs to the systemd journal. Each turn writes one summary line (API call
 journalctl -u personal-assistant -f            # follow
 journalctl -u personal-assistant -p warning    # problems only
 ```
+
+## Host setup
+
+What lives outside the repo, and how to recreate it on a fresh droplet:
+
+- **systemd:** copy `scripts/personal-assistant.service` to `/etc/systemd/system/`, then `sudo systemctl enable --now personal-assistant`.
+- **`.env`:** copy `.env.example`, fill it in, `chmod 600 .env`. Generate `WEBHOOK_TOKEN` with the command in `.env.example`.
+- **DNS:** an A record `pa.mattfae.com` → the droplet's public IP (currently `104.236.236.93`). No AAAA record; the droplet has no IPv6.
+- **Caddy** (HTTPS for the webhooks): install from Caddy's official apt repo (caddyserver.com/docs/install), copy `scripts/Caddyfile` to `/etc/caddy/Caddyfile`, `sudo systemctl reload caddy`. Caddy gets and renews the certificate itself; ports 80 and 443 must be reachable.
+- **iPhone arrival automation:** Shortcuts → Automation → Arrive (home, any time, Run Immediately) → Get Contents of URL: `https://pa.mattfae.com/hooks/arrived-home`, method POST, header `Authorization` = `Bearer <WEBHOOK_TOKEN>`. If the token changes, update it here too.
 
 ## Stack
 

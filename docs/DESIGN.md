@@ -217,7 +217,7 @@ The core is the master; channels plug into it. `bot/main.py` creates the Anthrop
 
 ## Webhooks (`bot/webhooks.py`)
 
-Caddy (`/etc/caddy/Caddyfile`) terminates HTTPS for `pa.mattfae.com`, gets and renews the certificate itself, forwards `/hooks/*` to `127.0.0.1:8787`, and answers everything else with 404. The listener runs in the bot process and only starts if `WEBHOOK_TOKEN` is set in `.env`.
+Caddy (`/etc/caddy/Caddyfile`, a copy of `scripts/Caddyfile`) terminates HTTPS for `pa.mattfae.com`, gets and renews the certificate itself, forwards `/hooks/*` to `127.0.0.1:8787`, and answers everything else with 404. The listener runs in the bot process and only starts if `WEBHOOK_TOKEN` is set in `.env`.
 
 `POST /hooks/<name>` with `Authorization: Bearer <WEBHOOK_TOKEN>` (compared in constant time):
 - wrong/missing token → 401; unknown name → 404; other methods → 405
