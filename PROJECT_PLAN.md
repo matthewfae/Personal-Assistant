@@ -248,7 +248,7 @@ Every job leaves events, so "no `wakeup` event in 25 hours" is a liveness signal
 
 ### Steps (draft)
 
-**10a.** Core package: owns client, MCP session, turn queue + single worker. Telegram handler becomes an adapter that submits to the queue and implements `deliver`. No behavior change.
+**10a.** ✓ Core: owns client, MCP session, turn queue + single worker. Telegram handler becomes an adapter that submits to the queue and implements `deliver`. No behavior change. Done as a module, `bot/core.py`, not a package — `bot/` modules import each other flat, and a package can come when the core grows. In-flight turns finish on shutdown; queued ones are dropped.
 **10b.** `wakeup` turn root, `run_loop` generalization, `project_messages` rendering, `notify_user` tool.
 **10c.** Scheduler + job table; first job: nightly consolidation. Hard-cap backstop in `project_messages`.
 **10d.** Remove reflection step.

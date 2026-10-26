@@ -1,43 +1,34 @@
 """
-Telegram bot handler: long-polling bot that routes messages through the agent loop.
+Telegram channel: a long-polling adapter between Telegram and the assistant core.
 
 Reads TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_ID from the environment.
-Only messages from the allowed user ID are processed; all others are silently
-dropped.
+Only messages from the allowed user ID are processed; all others are dropped
+with a WARNING.
 
 For each accepted message:
   1. A "working…" reply is sent immediately for responsiveness.
   2. A telegram_ack event is written to the DB under a pre-generated turn_id.
-  3. run_loop is called with the same turn_id so the ack and agent events share
-     a single turn in the event log.
-  4. The final assistant response is sent back to the user, split into
-     multiple messages if it exceeds Telegram's length limit.
+  3. The message is submitted to the core under the same turn_id, so the ack
+     and agent events share a single turn in the event log. The handler
+     returns right away; the core runs turns one at a time.
+  4. The core calls deliver() with the reply, which is sent to the user's chat,
+     split into multiple messages if it exceeds Telegram's length limit.
 """
 
-import asyncio
 import logging
 import os
-import signal
-import sys
 import uuid
-from pathlib import Path
+from contextlib import asynccontextmanager
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from anthropic import AsyncAnthropic
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from agent import run_loop, TurnResult, write_event
-from db.connection import get_db, init_db
-from log_setup import configure_logging
-from mcp_client import mcp_client
+from agent import write_event
+from core import Core
+from db.connection import get_db
 
-load_dotenv()
-
-_REQUIRED_ENV_VARS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_ID", "ANTHROPIC_API_KEY"]
+REQUIRED_ENV_VARS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_ID"]
 
 # Telegram's max message length, counted in UTF-16 code units (so characters
 # outside the Basic Multilingual Plane, such as most emoji, count as 2).
@@ -106,79 +97,61 @@ def _on_polling_error(exc: TelegramError) -> None:
         logger.error("Polling Telegram failed, retrying", exc_info=exc)
 
 
-async def _send_reply(update: Update, text: str) -> None:
-    """Send text to the user, splitting long text and substituting a placeholder for empty text."""
-    chunks = split_message(text) or [_EMPTY_REPLY_PLACEHOLDER]
-    for chunk in chunks:
-        await update.message.reply_text(chunk)
+class TelegramChannel:
+    """Telegram adapter: submits the allowed user's messages to the core and delivers replies to their chat."""
 
+    name = "telegram"
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle an incoming Telegram text message."""
-    allowed_id = context.bot_data["allowed_user_id"]
-    if update.effective_user.id != allowed_id:
-        logger.warning("Rejected message from user_id=%s", update.effective_user.id)
-        return
+    def __init__(self, token: str, allowed_user_id: int, core: Core):
+        self._allowed_user_id = allowed_user_id
+        self._core = core
+        self._app = ApplicationBuilder().token(token).build()
+        self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
 
-    user_message = update.message.text
-    turn_id = uuid.uuid4().hex
+    @classmethod
+    def from_env(cls, core: Core) -> "TelegramChannel":
+        return cls(
+            token=os.environ["TELEGRAM_BOT_TOKEN"],
+            allowed_user_id=int(os.environ["TELEGRAM_ALLOWED_USER_ID"]),
+            core=core,
+        )
 
-    ack = await update.message.reply_text("working\u2026")
-    _write_ack_event(turn_id, ack.message_id)
+    async def deliver(self, text: str) -> None:
+        """Send text to the user, splitting long text and substituting a placeholder for empty text.
 
-    client: AsyncAnthropic = context.bot_data["client"]
-    mcp = context.bot_data["mcp"]
+        In a private chat the chat id is the user id, so this needs no incoming
+        message to reply to (wake-ups will deliver unprompted).
+        """
+        chunks = split_message(text) or [_EMPTY_REPLY_PLACEHOLDER]
+        for chunk in chunks:
+            await self._app.bot.send_message(chat_id=self._allowed_user_id, text=chunk)
 
-    try:
-        result = await run_loop(client, mcp, user_message, turn_id=turn_id)
-    except Exception:
-        logger.exception("run_loop raised an exception")
-        await update.message.reply_text("Something went wrong. Please try again.")
-        return
+    @asynccontextmanager
+    async def running(self):
+        """Initialize and start the bot (without polling), and shut it down on exit."""
+        async with self._app:
+            await self._app.start()
+            try:
+                yield self
+            finally:
+                await self._app.stop()
 
-    await _send_reply(update, result.reply)
-    if result.proactive:
-        await _send_reply(update, result.proactive)
+    @asynccontextmanager
+    async def polling(self):
+        """Poll Telegram for updates; stop polling on exit. Must be used inside running()."""
+        await self._app.updater.start_polling(error_callback=_on_polling_error)
+        try:
+            yield self
+        finally:
+            await self._app.updater.stop()
 
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Ack an incoming text message and submit it to the core."""
+        if update.effective_user.id != self._allowed_user_id:
+            logger.warning("Rejected message from user_id=%s", update.effective_user.id)
+            return
 
-async def main() -> None:
-    missing = [v for v in _REQUIRED_ENV_VARS if not os.environ.get(v)]
-    if missing:
-        sys.exit(f"Missing required environment variables: {', '.join(missing)}")
-
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    allowed_user_id = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
-    init_db()
-    client = AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-    # Handle one update at a time (python-telegram-bot's default, made explicit).
-    # Turns must not overlap: concurrent turns would interleave their events and
-    # race on the context bound. Don't enable this without adding a lock around run_loop.
-    app = ApplicationBuilder().token(token).concurrent_updates(False).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    async with mcp_client() as mcp:
-        app.bot_data["client"] = client
-        app.bot_data["mcp"] = mcp
-        app.bot_data["allowed_user_id"] = allowed_user_id
-
-        async with app:
-            await app.start()
-            await app.updater.start_polling(error_callback=_on_polling_error)
-
-            stop_event = asyncio.Event()
-            loop = asyncio.get_event_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, stop_event.set)
-
-            logger.info("Bot started. Waiting for messages.")
-            await stop_event.wait()
-
-            logger.info("Shutdown signal received. Stopping.")
-            await app.updater.stop()
-            await app.stop()
-
-
-if __name__ == "__main__":
-    configure_logging()
-    asyncio.run(main())
+        turn_id = uuid.uuid4().hex
+        ack = await update.message.reply_text("working\u2026")
+        _write_ack_event(turn_id, ack.message_id)
+        self._core.submit(update.message.text, self, turn_id=turn_id)
