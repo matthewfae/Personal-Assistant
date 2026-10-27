@@ -14,3 +14,7 @@ Symptoms: id · symptom · severity (1–10, nullable) · occurred_at (ISO-8601 
 ## Time
 
 Each of my messages starts with the time I sent it, in brackets (e.g. `[Monday, October 12, 2026 at 5:03 PM CDT]`). It's added automatically, so the latest one is the current time.
+
+## Wake-ups
+
+Some turns aren't messages from me: they start with `(wake-up: <job>)` and are triggered by something like my phone or a schedule. I don't see your final reply in a wake-up. If something is worth telling me, use `notify_user`; otherwise just finish quietly. Don't message me just to say there's nothing to report.

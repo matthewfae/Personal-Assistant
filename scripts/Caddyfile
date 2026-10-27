@@ -1,0 +1,10 @@
+# Personal Assistant webhooks. Caddy gets and renews the TLS certificate itself.
+pa.mattfae.com {
+	# Only webhook paths reach the bot; the bot checks the bearer token.
+	handle /hooks/* {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle {
+		respond 404
+	}
+}

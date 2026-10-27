@@ -5,6 +5,8 @@
 bot/agent.py              Agent loop, event writing, projection, reflection step, causality tree debug
 bot/core.py               Assistant core: turn queue + single worker that runs turns and delivers output to channels
 bot/telegram_handler.py   Telegram channel adapter: allowlist, ack, submits messages to the core, delivers replies
+bot/jobs.py               Wake-up job definitions (name + prompt)
+bot/webhooks.py           Webhook listener (127.0.0.1:8787, behind Caddy): POST /hooks/<name> starts a wake-up job
 bot/main.py               Entry point: owns the Anthropic client and MCP session, starts the core and plugs in Telegram
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
 bot/mcp_client.py         MCP client: spawns server subprocess, handshake, tool dispatch
@@ -106,14 +108,15 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | type                | payload fields (beyond `v`)                              | parent              |
 |---------------------|----------------------------------------------------------|---------------------|
 | `user_message`      | `content`                                                | None (turn root)    |
-| `api_call`          | `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` | `user_message` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
+| `wakeup`            | `job`, `prompt`                                          | None (turn root)    |
+| `api_call`          | `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` | `user_message`/`wakeup` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
 | `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
 | `tool_result`       | `tool_use_id`, `content`, `is_error`                     | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
 | `telegram_ack`      | `telegram_message_id`                                    | None (turn root)    |
 | `error`             | `context`, `message`                                     | `assistant_message` (reflection); last input event (main turn) |
 
-`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (`"reflection"` or `"main_turn"`); `message` is the exception string or a description of the failure.
+`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (`"reflection"`, `"main_turn"` or `"wakeup"`); `message` is the exception string or a description of the failure.
 
 `api_call` cache counts come from `response.usage` (recorded as `0` when absent). Events written before they were added have no cache fields.
 
@@ -123,6 +126,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 
 | tool | available in | description |
 |---|---|---|
+| `notify_user` | wake-up turns only | Send the user a message via the primary channel. A `LocalTool` run in-process by the core, not an MCP tool. |
 | `set_context_bound` | reflection only | Advance the projection bound. Requires a `rationale` field. Hidden from main turn. |
 | `add_task` | main turn + reflection | Create a new task with area, summary, and optional priority/effort/detail. |
 | `update_task` | main turn + reflection | Update fields on an existing task (status, priority, detail, etc.). |
@@ -209,6 +213,21 @@ The core is the master; channels plug into it. `bot/main.py` creates the Anthrop
 
 **Shutdown:** `Core.stop()` lets the in-flight turn finish rather than cancelling it — cancelling mid-tool-call would leave a `tool_call` with no `tool_result`. Turns still queued are dropped with a WARNING; their `user_message` events were never written, so history stays consistent (their `telegram_ack` events remain). `main.py` nests the context managers so shutdown runs: stop Telegram polling → stop the core → shut down the Telegram bot (the in-flight turn can still deliver).
 
+**Wake-ups:** `core.submit_wakeup(job)` queues a turn with no inbound message, on the same queue as user turns. `run_loop(..., job=name, local_tools=[...])` writes a `wakeup` root event instead of `user_message`, offers the local tools after the MCP tools, and skips the reflection step. The final reply is written as an `assistant_message` but not delivered. To reach the user, Claude calls `notify_user`, which delivers to `core.primary_channel` (Telegram). A failed wake-up is logged, not sent. `project_messages` renders a wake-up root as a timestamped user message: `(wake-up: <job>)` then the prompt.
+
+## Webhooks (`bot/webhooks.py`)
+
+Caddy (`/etc/caddy/Caddyfile`, a copy of `scripts/Caddyfile`) terminates HTTPS for `pa.mattfae.com`, gets and renews the certificate itself, forwards `/hooks/*` to `127.0.0.1:8787`, and answers everything else with 404. The listener runs in the bot process and only starts if `WEBHOOK_TOKEN` is set in `.env`.
+
+`POST /hooks/<name>` with `Authorization: Bearer <WEBHOOK_TOKEN>` (compared in constant time):
+- wrong/missing token → 401; unknown name → 404; other methods → 405
+- within the hook's cooldown → 200 `ignored (cooldown)` (geofences can fire repeatedly; cooldowns are in memory and reset on restart)
+- otherwise → 202, and the hook's job is queued as a wake-up
+
+| hook | job | cooldown | trigger |
+|---|---|---|---|
+| `arrived-home` | `arrived_home` | 15 min | iPhone Shortcuts personal automation: Arrive at Home → Get Contents of URL |
+
 ## Telegram Channel (`bot/telegram_handler.py`)
 
 `TelegramChannel` is the Telegram adapter. For each message from the allowed user: send a "working…" ack, write a `telegram_ack` event, and submit the message to the core under the same `turn_id`. The handler returns right away.
@@ -273,7 +292,7 @@ Two instances in `agent.py`:
 
 ## Config
 
-`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`. All four are consumed.
+`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`, and optionally `WEBHOOK_TOKEN` and `TIMEZONE`. All are consumed.
 
 ## Model
 

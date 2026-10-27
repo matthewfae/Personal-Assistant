@@ -142,3 +142,48 @@ def test_stop_when_idle_returns_promptly(fake_run_loop):
         await asyncio.wait_for(c.stop(), timeout=1)
 
     asyncio.run(scenario())
+
+
+def test_wakeup_is_silent_except_notify_user(monkeypatch):
+    from jobs import Job
+
+    calls = []
+
+    async def run_loop(client, mcp, text, turn_id=None, job=None, local_tools=None):
+        calls.append((text, job))
+        await local_tools[0].handler({"text": "welcome home"})
+        return TurnResult(reply="final text nobody sees", proactive=None)
+
+    monkeypatch.setattr(core, "run_loop", run_loop)
+    primary = FakeChannel()
+
+    async def scenario():
+        c = core.Core(client=None, mcp=None)
+        c.primary_channel = primary
+        async with c.running():
+            c.submit_wakeup(Job(name="arrived_home", prompt="you're home"))
+            await _until(lambda: primary.delivered)
+
+    asyncio.run(scenario())
+    assert calls == [("you're home", "arrived_home")]
+    assert primary.delivered == ["welcome home"]
+
+
+def test_failed_wakeup_is_logged_not_delivered(monkeypatch, caplog):
+    from jobs import Job
+
+    async def run_loop(*args, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(core, "run_loop", run_loop)
+    primary = FakeChannel()
+
+    async def scenario():
+        c = core.Core(client=None, mcp=None)
+        c.primary_channel = primary
+        async with c.running():
+            c.submit_wakeup(Job(name="j", prompt="p"))
+            await _until(lambda: "raised an exception" in caplog.text)
+
+    asyncio.run(scenario())
+    assert primary.delivered == []

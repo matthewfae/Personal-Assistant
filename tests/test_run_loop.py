@@ -162,3 +162,38 @@ def test_cache_token_counts_recorded():
         ).fetchone()["payload"])
     assert payload["cache_read_input_tokens"] == 1500
     assert payload["cache_creation_input_tokens"] == 0
+
+
+def test_wakeup_turn_runs_local_tool_and_skips_reflection():
+    from agent import LocalTool, project_messages
+
+    sent = []
+
+    async def notify(tool_input):
+        sent.append(tool_input["text"])
+        return "Sent."
+
+    notify_tool = LocalTool({"name": "notify_user", "description": "", "input_schema": {"type": "object"}}, notify)
+    mcp = FakeMCP()
+    client = FakeClient([
+        _response("tool_use", _tool_use("toolu_1", "notify_user", {"text": "Groceries to put away"})),
+        _response("end_turn", _text("Notified.")),
+    ])
+
+    result = asyncio.run(run_loop(client, mcp, "Matt got home.", job="arrived_home", local_tools=[notify_tool]))
+
+    assert sent == ["Groceries to put away"]
+    assert mcp.calls == []  # handled in-process, not sent to MCP
+    assert result.reply == "Notified."
+    assert result.proactive is None
+    # No reflection api_call after the assistant_message.
+    assert _event_types() == ["wakeup", "api_call", "tool_call", "tool_result", "api_call", "assistant_message"]
+    # notify_user is offered last, carrying the tool-list cache breakpoint.
+    tools = client.requests[0]["tools"]
+    assert tools[-1]["name"] == "notify_user"
+    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+    assert sum(1 for t in tools if "cache_control" in t) == 1
+    # The wake-up root is projected as a timestamped user message.
+    first = project_messages()[0]
+    assert first["role"] == "user"
+    assert first["content"].endswith("]\n(wake-up: arrived_home)\nMatt got home.")
