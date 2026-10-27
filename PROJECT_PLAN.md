@@ -1,15 +1,15 @@
 # Personal Assistant Project Plan
 
 ## Overview
-Python Telegram bot that routes user messages through the Claude API with access to a local SQLite context database. Claude uses tool calls to read/write the DB in a multi-step agent loop, then returns a final response via Telegram.
+Personal assistant built around the Claude API and a local SQLite database. An assistant core runs turns one at a time: messages from Telegram, and wake-ups from a webhook (iPhone arrival) or the in-process scheduler. In each turn Claude uses MCP tools to read/write the DB in a multi-step agent loop, then replies via Telegram (or, for wake-ups, messages the user only if worthwhile).
 
 ## Core Architecture Decisions
 
 ### Foundational
 - **Model:** Configured in `bot/agent.py`. Expected to change as better models are released.
-- **Prompt caching:** Applied to system prompt and tool list.
+- **Prompt caching:** Applied to the tool list, system prompt and message history.
 - **Tool architecture:** MCP server/client split. Tools live in `tools/server.py`; the bot is an MCP client.
-- **DB access:** Curated tool functions only, not raw SQL.
+- **DB access:** Curated tool functions for writes; a read-only `query` tool for ad-hoc SQL.
 - **Layering rule:** `tools/server.py` has no SQL; `db/` has no knowledge of MCP or Claude. Each layer only imports downward.
 - **Error handling:** Low-level code raises naturally; the agent layer catches and forwards errors to the user.
 
@@ -28,17 +28,19 @@ Every meaningful thing that happens — incoming user message, outgoing assistan
 
 ### Turn Model
 
-A **turn** is one cycle: `user_message_in → [api_call / tool_call / tool_result]* → assistant_message_out → reflection_step`.
+A **turn** is one cycle: `user_message | wakeup → [api_call / tool_call / tool_result]* → assistant_message`.
 
 - Every event in a turn shares a single `turn_id`.
 - The main response uses text-on-`end_turn` — Claude's natural output mode. Wrapping message-sending in a tool was considered and rejected: it kills streaming, doubles API calls for the common one-message case, creates ambiguity about `end_turn` text, and puts transport errors inside the agent loop.
-- The **reflection step** is a post-turn mini agent loop. Claude reviews the completed turn with full tool access and may use tools (e.g., `set_context_bound`), produce a follow-up message, or signal `PASS` (nothing to add). See Stage 7.
+- Turns never overlap: the core runs them from one queue (Stage 10a).
+- History is trimmed by a weekly `trim_context` wake-up, with a 30-turn hard cap (Stage 10c-2). The per-turn reflection step (Stage 7) was removed in 10d.
 
 ### Causality: `parent_event_id`
 
 Every event (except turn roots) carries a `parent_event_id` pointing to the event that caused it.
 
-- `user_message` — no parent. Turn root.
+- `user_message`, `wakeup` — no parent. Turn roots.
+- `telegram_ack` — no parent; written before the `user_message` under the same `turn_id`.
 - `api_call` — parent is the last new input event (first call: `user_message`; later calls: `tool_result`, or shared `api_call` ancestor for parallel results).
 - `tool_call` — parent is the `api_call` that requested it.
 - `tool_result` — parent is its `tool_call`.
@@ -46,11 +48,11 @@ Every event (except turn roots) carries a `parent_event_id` pointing to the even
 
 ### Responsiveness
 
-Not a constraint. Everything runs synchronously. A lightweight "working…" Telegram ack is desired — see Deferred Work.
+Not a constraint. API calls are async (`AsyncAnthropic`) so they don't block the process, but turns run one at a time. Telegram gets a "working…" ack as soon as a message arrives.
 
 ### Tool Surface
 
-Start minimal. Add tools only when driven by concrete need. Current surface: task, shopping and symptom CRUD tools, a read-only `query` tool for ad-hoc SQL over any table, and `set_context_bound` (reflection step only). The full list lives in `docs/DESIGN.md` → Tools.
+Start minimal. Add tools only when driven by concrete need. Current surface: task, shopping and symptom CRUD tools, a read-only `query` tool for ad-hoc SQL over any table, and `set_context_bound` (`trim_context` job only). Wake-up turns also get `notify_user`. The full list lives in `docs/DESIGN.md` → Tools.
 
 ## Completed: Stage 3 — Events-Driven Rebuild ✓
 
@@ -70,11 +72,11 @@ Meta-call failures (API errors, parse errors, invalid returned id) are caught an
 
 Read/search tools remain deferred. They are added only when the bounded projection can no longer serve the relevant context.
 
-Note: The `context_decision` meta-call is superseded by the reflection step in Stage 7. The mechanism changes (dedicated meta-call → `set_context_bound` tool in a mini agent loop), but the goal is the same: bound the projection window.
+Note: The `context_decision` meta-call was superseded by the reflection step in Stage 7, which was itself replaced by the weekly `trim_context` job in Stage 10. The mechanism changes (dedicated meta-call → `set_context_bound` tool in a mini agent loop), but the goal is the same: bound the projection window.
 
 ## Completed: Stage 5 — Telegram Bot ✓
 
-Each input channel gets its own handler. No shared channel abstraction — each transport is different enough that a common interface would be leaky. Handlers call `run_loop(user_message)` directly; no channel identity leaks into the agent.
+*(Superseded in Stage 10a: the core now owns turns, and channels are thin adapters with a `deliver()` method.)* Each input channel gets its own handler. No shared channel abstraction — each transport is different enough that a common interface would be leaky. Handlers call `run_loop(user_message)` directly; no channel identity leaks into the agent.
 
 **5a.** `bot/telegram_handler.py` — `python-telegram-bot` with long polling, sender allowlist, wire to `run_loop`. Send a "working…" ack at turn start and record it as an event. ✓
 
@@ -88,9 +90,11 @@ DB migrations added to drop legacy `conversation_id` and `correlation_id` column
 
 **6b.** Logging — one `configure_logging()` per process, journald priorities, per-turn summary line, quiet Telegram network blips, MCP server logs formatted. See `docs/DESIGN.md` → Logging. ✓
 
-**6c.** Basic health checks. *(Not started — folded into Stage 10.)*
+**6c.** Basic health checks. *(Not started — now Stage 10e.)*
 
-## Completed: Stage 7 — Reflection Step ✓
+## Completed: Stage 7 — Reflection Step ✓ *(removed in Stage 10d)*
+
+*Historical.* The reflection step was replaced by the weekly `trim_context` job; see Stage 10.
 
 Replaced the Stage 4 `context_decision` meta-call with a unified post-turn reflection step. After the main response, a mini agent loop runs where Claude can trim context, call tools, or send a follow-up message.
 
@@ -137,6 +141,8 @@ shopping (id, item, task_id, created_at)
 
 ### Tools
 
+*As designed in Stage 8; the current list is in `docs/DESIGN.md` → Tools.*
+
 | tool | available in | description |
 |---|---|---|
 | `add_task` | main turn + reflection | Create a new task |
@@ -172,46 +178,13 @@ New `symptoms` table for logging medical symptom occurrences with severity and t
 
 **8b tools:** `log_symptom`, `update_symptom`, `list_symptoms`, `get_symptom`, `delete_symptom`.
 
-## Current TODO — Review Findings (2026-10-12)
+## Completed: Review Findings (2026-10-12) ✓
 
-Findings from a code review. Ordered by priority within each group.
+All findings from the October code review are fixed: secret/DB file permissions, tool errors no longer poison history, API calls capped per turn (15), Telegram message splitting, `AsyncAnthropic`, read-only `query` connection, tests (#47–#51), stale docs, Sonnet 5.5 upgrade, prompt caching with the time moved out of the system prompt (#49), `gh` auth, the bot token kept out of the journal, and the Telegram token rotated.
 
-### High priority
-- [x] **Secret/data file permissions.** `.env` is `664` and `personal_assistant.db` is `644` — readable by any local user. `chmod 600` both. (Host-only; not tracked in git.)
-- [x] **Tool errors can poison the history.** In `run_loop` / `_run_reflection`, if `mcp.call_tool` raises, the `tool_call` event is written but no `tool_result`. Every later projection then contains a `tool_use` with no matching `tool_result`, which the API rejects, so every turn fails until the context bound moves past it. Fixed: shared `_execute_tool_calls` always writes a `tool_result`; MCP `isError` is now propagated as `is_error` (ordinary tool exceptions were already returned as error results by the MCP server, so this only bit on transport failures).
-- [x] **No iteration cap on agent loops.** Neither `run_loop` nor `_run_reflection` limits rounds, so a looping model can burn API credits. Fixed: both loops capped at `_MAX_API_CALLS` (15); hitting it writes an `error` event.
+*Caching check (2026-10-26, 21 calls):* caching saves ~39% net of the write premium; ~3¢ per turn; total spend since April ~$2. No further tuning warranted at this volume. Removing reflection (10d) has since cut one API call from every message.
 
-### Robustness
-- [x] **Telegram send failures.** `reply_text` fails on messages over 4096 chars and on empty strings (a tool-only `end_turn` yields `""`). Fixed: `split_message` splits replies at paragraph/line/word boundaries within Telegram's 4096 UTF-16-unit limit; empty replies send a placeholder.
-- [x] **Sync client in async code.** `Anthropic` (sync) is called inside async handlers, blocking the event loop for each API call. Switch to `AsyncAnthropic` and `await` the calls.
-  - *Concurrency note:* switching does **not** let turns overlap. python-telegram-bot handles one update at a time by default (`concurrent_updates` off), so turns are already serialized by the framework, not by the blocking client. Set `.concurrent_updates(False)` explicitly in `ApplicationBuilder` with a comment, so the guarantee is visible and nobody turns it on without adding a lock. (Concurrent turns would interleave events and race on `context_bound`.)
-  - Done (#48): `AsyncAnthropic` everywhere, `concurrent_updates(False)` explicit.
-- [x] **`query` read-only enforcement.** The `startswith("SELECT")` check rejects valid `WITH …` queries and isn't a real guarantee. Open a read-only connection (`file:...?mode=ro`, `uri=True`) for `run_query` instead, so SQLite itself refuses writes. Keep the `_MAX_ROWS` cap (200) so a careless `SELECT * FROM events` can't flood the context. Done (#51); SQL errors now go back to Claude as messages instead of logged tool failures.
-
-### Housekeeping
-- [x] **Tests.** `tests/` is empty. Start with `project_messages()` (pure logic, tricky edge cases); see Deferred Work → Unit Tests. Do this *first*, so the async and timestamp changes below have something to check against. Done (#47–#49, #51): 33 tests over `project_messages`, `split_message`, `run_loop` (fake async client) and `run_query`; `uv run pytest`.
-- [x] **Stale docs.** README says "Stages 1–5 complete"; "Tool Surface" section above still references `add_fact`; Stage 8 is still marked current.
-- [x] **Model version.** Upgraded from `claude-sonnet-4-6` to `claude-sonnet-5-5` (cheaper: $2/$10 vs $3/$15 per MTok). Sonnet 5.5 thinks by default, so effort is set explicitly (`medium`) and `max_tokens` raised to 16000. Check `api_call` token counts after a few days to confirm the net saving.
-- [x] **Prompt cache invalidated every minute.** `{current_time}` in both system prompts is rendered to the minute, so the cached system prompt is discarded whenever the minute changes.
-  - *Fix:* move the time out of the system prompt rather than rounding it. Rounding to the hour would lose the minute precision Claude needs for "remind me in 20 minutes" or "what can I do before 5?". Instead, `project_messages` prefixes each user message with its send time, taken from the event's own (immutable) `timestamp`, so the rendered history is byte-stable across turns. The reflection trigger carries the current time the same way. Both system prompts become fully static.
-  - *Also:* there is currently no cache breakpoint on `messages`, so every API call pays full price for the whole history — including the 2nd–15th calls within a single tool-using turn. Add top-level automatic caching (`cache_control={"type": "ephemeral"}` on `messages.create`), and record `cache_read_input_tokens` / `cache_creation_input_tokens` in `api_call` events so cache hits can actually be verified.
-  - Done (#49). Caveat: the main turn and reflection have different tools/system prompts, so they never share cache entries, and moving the context bound breaks the cached message history. Check the new counts after a week to see whether caching pays for its write premium at this usage level.
-  - *Checked 2026-10-26* (5 turns, 21 calls since #49): caching saves ~39% net of the write premium (~60–65% of input tokens are cache reads, almost all within a turn; the 5-minute TTL usually expires between turns). Cache writes are now 64% of spend. Cost per turn is flat at ~3¢ vs ~2.8¢ on Sonnet 4.6: lower prices and caching were offset by prompts roughly doubling (~4.7K vs ~2.4K tokens per call) and thinking output (~188 vs ~79 output tokens per call). Pre-#49 events didn't record cache tokens, so the old figure is approximate. Total spend since April is ~$2; no further tuning warranted at this volume.
-
-### Work order
-1. Tests for `project_messages()` (and `split_message`), with `pytest` as a dev dependency.
-2. `AsyncAnthropic` + explicit `concurrent_updates(False)`.
-3. Time out of the system prompt + message caching + cache token counts in `api_call` events.
-4. Read-only connection for `query`.
-
-Separately: Stage 6c (health checks) is not done; 6b (logging) is. The `api_call` token counts from step 3 also cover the "check token counts" follow-up from the model upgrade.
-
-### Ops (outside the repo)
-- [x] **`gh` auth is broken.** `gh` returns 401 Bad credentials. Re-run `gh auth login`.
-- [x] **Bot token written to the journal.** `httpx` logged every Telegram API URL at INFO, and those URLs contain the bot token. Fixed: `httpx` logger set to WARNING in `telegram_handler.py`.
-- [x] **Rotate the Telegram bot token.** The old token was in past journal entries and was exposed in a Claude Code session. Revoked via @BotFather and replaced in `.env` (2026-10-12).
-
-## Stage 10 (Next) — Core Service & Scheduled Wake-ups
+## Stage 10 (Current) — Core Service & Scheduled Wake-ups
 
 Claude should be able to wake on a timer, get a prompt, and pick from a repertoire of jobs, not only react to Telegram messages. That requires inverting the process: today `telegram_handler.main()` is the entry point and owns the Anthropic client, the MCP session and turn serialization. Instead, the **assistant core is the master** and Telegram is one comms channel plugged into it.
 
@@ -229,32 +202,36 @@ Claude should be able to wake on a timer, get a prompt, and pick from a repertoi
 
 **Wake-ups are silent by default.** A wake-up turn's final text is not sent anywhere. To reach the user, Claude calls a `notify_user(text)` tool (wake-up turns only). This avoids the `PASS`-sentinel failure mode — reflection leaked "…PASS" to the user twice and wrote 13 empty `assistant_message` events. Stage 7's argument against a send-message tool applies to replies, where speaking is the norm; for wake-ups, silence is the norm.
 
-**Scheduler.** In-process, owned by the core — not python-telegram-bot's `JobQueue`, which belongs to the channel. A small asyncio loop over a job table (name, schedule, prompt) is enough; APScheduler if schedules get complex. Jobs are defined in code/config at first.
+**Scheduler.** In-process, not python-telegram-bot's `JobQueue`, which belongs to the channel. A small asyncio loop over `SCHEDULE` in `bot/scheduler.py`; jobs and schedules are defined in code. A DB-backed schedule (so Claude or Matt could add routines over Telegram) is a possible later step.
 
 ### Jobs
 
-- **Nightly consolidation** (replaces the reflection step's context management). Claude reviews the day's events, writes anything durable (decisions, preferences, facts) into tables, *then* advances the projection bound. Trimming after saving loses nothing — unlike today, where reflection once trimmed too aggressively and lost the shopping list it had just shown.
-- **Hard cap backstop.** `project_messages` also enforces a fixed maximum (e.g. last 30 turns) so a failing consolidation job can't let history grow unbounded.
-- Later: morning brief, overdue/stale tasks, symptom pattern review.
-- **Cost:** a wake-up costs about what a turn does (~3¢). Daily ≈ $1/month; hourly ≈ $20/month. Start with a few per day.
+| job | trigger | status |
+|---|---|---|
+| `arrived_home` | iPhone arrival webhook | live (10b) |
+| `weekend_plan` | Saturdays 9:00 | live (10c) |
+| `trim_context` | Mondays 3:00, skipped if no turns since last run | live (10c-2) |
 
-### Retire the reflection step
+- Later candidates: morning brief, overdue/stale tasks, symptom pattern review. Add them once the existing jobs have been lived with for a while.
+- **Cost:** a wake-up costs about what a turn does (~3¢). Daily ≈ $1/month; hourly ≈ $20/month.
+- **Considered and dropped:** nightly consolidation with a notes/facts table. Matt supplies context himself, and at a few turns per active day weekly trimming is enough.
 
-Data from 58 reflections: 48 were `set_context_bound` only, ~3 did real tidy-up work, and 7 produced follow-up messages — 3 of them correcting confusion caused by the split itself (the main turn can't see `set_context_bound`, so it tells the user the tool doesn't exist). Once nightly consolidation owns the bound: delete `_run_reflection`, `prompts/reflection.md` and `TurnResult.proactive`; keep `set_context_bound` but expose it only to the consolidation job. Add a line to the main prompt to tidy related items before finishing. Halves API calls per turn and gives one shared prompt-cache prefix.
+### Health checks (absorbs Stage 6c) — next
 
-### Health checks (absorbs Stage 6c)
+Wake-ups are now too infrequent (weekly jobs plus arrivals) to serve as a liveness signal on their own. Plan:
+- **Crash:** systemd `OnFailure=` runs a script that messages Matt via the Telegram API directly, independent of the bot.
+- **Box or process down:** the bot pings an external heartbeat service (e.g. healthchecks.io free tier) every few minutes; the service alerts if pings stop. Pings carry no data.
+- **Bot up but failing** (e.g. every turn errors): deferred until it actually happens; `error` events and the journal cover it for now.
 
-Every job leaves events, so "no `wakeup` event in 25 hours" is a liveness signal. Pair with systemd `OnFailure=` for crashes. Alerting must not depend only on the process being checked — a cheap external check (cron or a heartbeat service) is needed for "the whole box is down".
-
-### Steps (draft)
+### Steps
 
 **10a.** ✓ Core: owns client, MCP session, turn queue + single worker. Telegram handler becomes an adapter that submits to the queue and implements `deliver`. No behavior change. Done as a module, `bot/core.py`, not a package — `bot/` modules import each other flat, and a package can come when the core grows. In-flight turns finish on shutdown; queued ones are dropped.
-**10b.** ✓ `wakeup` turn root, `run_loop` generalization, `project_messages` rendering, `notify_user` tool. Done, plus a first trigger ahead of the scheduler: a webhook listener (`bot/webhooks.py`) behind Caddy at `https://pa.mattfae.com/hooks/<name>`, bearer-token auth, per-hook cooldown. First job: `arrived_home`, fired by an iPhone arrival automation. Wake-ups skip the reflection step.
+**10b.** ✓ `wakeup` turn root, `run_loop` generalization, `project_messages` rendering, `notify_user` tool. Done, plus a first trigger ahead of the scheduler: a webhook listener (`bot/webhooks.py`) behind Caddy at `https://pa.mattfae.com/hooks/<name>`, bearer-token auth, per-hook cooldown. First job: `arrived_home`, fired by an iPhone arrival automation. Wake-ups skipped the reflection step (since removed).
 **10c.** ✓ Scheduler (`bot/scheduler.py`): schedules defined in code, in local time (`TIMEZONE`), ticking every 30s. A run missed while the bot was down is caught up if under 2 hours old, else skipped; the last run is read from `wakeup` events, so restarts neither repeat nor forget a run. First job: `weekend_plan`, Saturdays 9:00.
 **10c-2.** ✓ Context trimming moved to a weekly `trim_context` job (Mondays 3:00), not nightly: at ~3–5 turns on an active day, history grows slowly enough that daily trimming saves nothing. No notes table: Matt supplies context himself, so the job only tidies tasks/shopping before trimming. Skipped without an API call if there were no turns since the last trim. Only the trim job sees event ids (`#N` labels on its projected history; ordinary turns don't, so Claude can't copy the labels into replies), so its `from_event_id` is no longer a guess. A bound mid-turn snaps back to the turn's start, since the API rejects a tool call split from its result. Hard cap: projections never include more than the last 30 turns (`_MAX_TURNS`).
-**10d.** ✓ Reflection step removed (done with 10c-2): one API call fewer per message, and the main turn no longer gets confused by a tool it can't see.
-**10e.** Liveness check + `OnFailure=`.
-**10f.** More jobs.
+**10d.** ✓ Reflection step removed (done with 10c-2). Of 58 reflections, 48 only moved the bound, ~3 did real tidy-up, and 3 of 7 follow-ups corrected confusion caused by the split itself (the main turn couldn't see `set_context_bound`). Now: one API call fewer per message and one shared prompt-cache prefix.
+**10e.** Crash alert (`OnFailure=`) + external heartbeat. *(Next.)*
+**10f.** More jobs, as wanted.
 
 ## Stage 9 (Future) — Security Hardening
 
@@ -263,24 +240,10 @@ Secret management, DB access patterns, file permissions, rate limiting.
 ## Deferred Work
 
 ### Unit Tests
-Full automated test coverage for the core agent layer. Priority areas:
-- `project_messages()` — event projection logic, edge cases (empty log, trimmed bound, orphaned tool results)
-- `_run_reflection()` — PASS handling, tool call path, error event writing, exception propagation
-- `run_loop()` — end_turn path, tool_use loop, unexpected stop_reason
-- `db/` layer — tasks/shopping CRUD, context_bound read/write, migration idempotency
-- `mcp_client.py` — tool list formatting, cache_control attachment, call_tool dispatch
-
-### Structured Logging in agent.py
-Add `logging` calls throughout `agent.py` and `mcp_client.py`:
-- API call start/end with token counts
-- Tool dispatch (name, truncated input)
-- Reflection step outcome (PASS vs. follow-up vs. error)
-- Context bound changes
-
-Keep the `httpx` logger at WARNING or above: its INFO lines include Telegram API URLs, which contain the bot token.
+66 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, history trimming, `query` and logging (`uv run pytest`). Gaps: the `db/` CRUD layer and `mcp_client.py`.
 
 ### Rate Limiting
 Protect against rapid Telegram message bursts exhausting API credits:
-- One-turn-at-a-time is already provided by python-telegram-bot's default sequential update handling (see the sync-client TODO). What's missing is protection against *volume*: a burst of N messages still queues N full turns.
-- Options: coalesce messages that arrive while a turn is running into the next turn, or cap turns per time window.
+- Turns already run one at a time (the core's turn queue). What's missing is protection against *volume*: a burst of N messages still queues N full turns.
+- Options: coalesce messages that arrive while a turn is running into the next turn (the turn queue is the natural place), or cap turns per time window.
 - Backpressure signal to user if a turn is already running

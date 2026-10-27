@@ -11,7 +11,7 @@ Stages 1–8 and 10a–10d are complete. The agent loop records every API call, 
 ## Repository layout
 
 ```
-bot/         Entry point, Telegram handler, agent loop, MCP client, prompt builder, test harness
+bot/         Entry point, assistant core, agent loop, Telegram channel, webhooks, scheduler, jobs, MCP client
 tools/       MCP server (tool schemas and dispatch)
 db/          SQLite access layer (connection, schema, tables, mutation log)
 prompts/     System prompt template
@@ -24,6 +24,12 @@ scripts/     systemd unit, Caddyfile and other host config
 
 - **`PROJECT_PLAN.md`** — architecture decisions, current stage, upcoming stages.
 - **`docs/DESIGN.md`** — layout, schema, agent flow, and current tool surface.
+
+## Running tests
+
+```
+uv run pytest
+```
 
 ## Logs
 
@@ -47,6 +53,7 @@ What lives outside the repo, and how to recreate it on a fresh droplet:
 ## Stack
 
 - Python 3.11+, managed with `uv`
-- `anthropic`, `mcp`, `python-telegram-bot`, `python-dotenv`
+- `anthropic`, `mcp`, `python-telegram-bot`, `aiohttp` (webhook listener), `python-dotenv`
 - `sqlite3` from stdlib
+- Caddy on the host, for HTTPS in front of the webhooks
 - Target model: configured in `bot/agent.py`
