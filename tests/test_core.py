@@ -36,7 +36,7 @@ def fake_run_loop(monkeypatch):
             await asyncio.sleep(0)
             if text == "boom":
                 raise ValueError("boom")
-            return TurnResult(reply=f"re: {text}", proactive="extra" if text == "proactive" else None)
+            return TurnResult(reply=f"re: {text}")
         finally:
             state["active"] -= 1
 
@@ -65,19 +65,6 @@ def test_turns_run_one_at_a_time_in_order(fake_run_loop):
     asyncio.run(scenario())
     assert channel.delivered == ["re: a", "re: b", "re: c"]
     assert fake_run_loop["max_active"] == 1
-
-
-def test_proactive_text_is_delivered_after_reply(fake_run_loop):
-    channel = FakeChannel()
-
-    async def scenario():
-        c = core.Core(client=None, mcp=None)
-        async with c.running():
-            c.submit("proactive", channel)
-            await _until(lambda: len(channel.delivered) == 2)
-
-    asyncio.run(scenario())
-    assert channel.delivered == ["re: proactive", "extra"]
 
 
 def test_failed_turn_sends_error_reply_and_worker_continues(fake_run_loop):
@@ -149,10 +136,10 @@ def test_wakeup_is_silent_except_notify_user(monkeypatch):
 
     calls = []
 
-    async def run_loop(client, mcp, text, turn_id=None, job=None, local_tools=None):
-        calls.append((text, job))
+    async def run_loop(client, mcp, text, turn_id=None, job=None, local_tools=None, extra_tools=frozenset()):
+        calls.append((text, job, extra_tools))
         await local_tools[0].handler({"text": "welcome home"})
-        return TurnResult(reply="final text nobody sees", proactive=None)
+        return TurnResult(reply="final text nobody sees")
 
     monkeypatch.setattr(core, "run_loop", run_loop)
     primary = FakeChannel()
@@ -165,7 +152,7 @@ def test_wakeup_is_silent_except_notify_user(monkeypatch):
             await _until(lambda: primary.delivered)
 
     asyncio.run(scenario())
-    assert calls == [("you're home", "arrived_home")]
+    assert calls == [("you're home", "arrived_home", frozenset())]
     assert primary.delivered == ["welcome home"]
 
 

@@ -40,8 +40,6 @@ async def main():
             print(f"\nUser: {message}")
             result = await run_loop(client, mcp, message)
             print(f"Assistant: {result.reply}")
-            if result.proactive:
-                print(f"Proactive: {result.proactive}")
             print("-" * 60)
 
 

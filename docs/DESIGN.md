@@ -2,10 +2,11 @@
 
 ## Layout
 ```
-bot/agent.py              Agent loop, event writing, projection, reflection step, causality tree debug
+bot/agent.py              Agent loop, event writing, projection (with history cap), causality tree debug
 bot/core.py               Assistant core: turn queue + single worker that runs turns and delivers output to channels
 bot/telegram_handler.py   Telegram channel adapter: allowlist, ack, submits messages to the core, delivers replies
-bot/jobs.py               Wake-up job definitions (name + prompt)
+bot/jobs.py               Wake-up job definitions (name, prompt, extra tools)
+bot/scheduler.py          Scheduler: starts jobs on a clock (SCHEDULE, local time)
 bot/webhooks.py           Webhook listener (127.0.0.1:8787, behind Caddy): POST /hooks/<name> starts a wake-up job
 bot/main.py               Entry point: owns the Anthropic client and MCP session, starts the core and plugs in Telegram
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
@@ -14,13 +15,12 @@ bot/prompt_builder.py     Loads prompt templates from prompts/; format_time() fo
 tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
-db/context.py             Read/write the context projection bound (context_bound table)
+db/context.py             Read/write the context projection bound (context_bound table); turn_root_id()
 db/tasks.py               Tasks CRUD
 db/shopping.py            Shopping list CRUD
 db/symptoms.py            Symptom log CRUD
 db/query.py               Read-only ad-hoc SQL for the query tool
 prompts/system.md         Main turn system prompt (static)
-prompts/reflection.md     Reflection step system prompt (static)
 ```
 
 ## Architecture
@@ -109,14 +109,14 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 |---------------------|----------------------------------------------------------|---------------------|
 | `user_message`      | `content`                                                | None (turn root)    |
 | `wakeup`            | `job`, `prompt`                                          | None (turn root)    |
-| `api_call`          | `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` | `user_message`/`wakeup` or last `tool_result` (main turn); `assistant_message` or last `tool_result` (reflection) |
+| `api_call`          | `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` | `user_message`/`wakeup` or last `tool_result` |
 | `tool_call`         | `tool_use_id`, `name`, `input`                           | `api_call`          |
 | `tool_result`       | `tool_use_id`, `content`, `is_error`                     | `tool_call`         |
 | `assistant_message` | `content`                                                | `api_call`          |
 | `telegram_ack`      | `telegram_message_id`                                    | None (turn root)    |
-| `error`             | `context`, `message`                                     | `assistant_message` (reflection); last input event (main turn) |
+| `error`             | `context`, `message`                                     | last input event of the turn |
 
-`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (`"reflection"`, `"main_turn"` or `"wakeup"`); `message` is the exception string or a description of the failure.
+`error` events record failures that are caught rather than surfaced to the user. `context` names the subsystem (`"main_turn"` or `"wakeup"`; older events also have `"reflection"`); `message` is the exception string or a description of the failure.
 
 `api_call` cache counts come from `response.usage` (recorded as `0` when absent). Events written before they were added have no cache fields.
 
@@ -127,22 +127,22 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | tool | available in | description |
 |---|---|---|
 | `notify_user` | wake-up turns only | Send the user a message via the primary channel. A `LocalTool` run in-process by the core, not an MCP tool. |
-| `set_context_bound` | reflection only | Advance the projection bound. Requires a `rationale` field. Hidden from main turn. |
-| `add_task` | main turn + reflection | Create a new task with area, summary, and optional priority/effort/detail. |
-| `update_task` | main turn + reflection | Update fields on an existing task (status, priority, detail, etc.). |
-| `list_tasks` | main turn + reflection | List tasks (all columns). Filterable by status, area, or summary text search. Pass status='all' for every status. |
-| `get_task` | main turn + reflection | Get full detail for a single task by id. |
-| `add_shopping` | main turn + reflection | Add an item to the shopping list, with optional task_id link. |
-| `list_shopping` | main turn + reflection | Return the full shopping list (id and item name). |
-| `remove_shopping` | main turn + reflection | Remove a shopping item by id. |
-| `log_symptom` | main turn + reflection | Record a symptom. `occurred_at` defaults to now; `severity` is 1–10. |
-| `update_symptom` | main turn + reflection | Correct or annotate a logged symptom. |
-| `list_symptoms` | main turn + reflection | List symptoms, most recent first. Filter by name (substring) or `since` (ISO-8601 bound). Default limit 100. |
-| `get_symptom` | main turn + reflection | Full detail for one symptom log by id. |
-| `delete_symptom` | main turn + reflection | Delete a symptom log (use when logged in error). |
-| `query` | main turn + reflection | Run an arbitrary read-only query (`SELECT` / `WITH … SELECT`) against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
+| `set_context_bound` | `trim_context` job only | Keep only the last `keep_turns` turns before the current one in future projections. Requires a `rationale` field. |
+| `add_task` | all turns | Create a new task with area, summary, and optional priority/effort/detail. |
+| `update_task` | all turns | Update fields on an existing task (status, priority, detail, etc.). |
+| `list_tasks` | all turns | List tasks (all columns). Filterable by status, area, or summary text search. Pass status='all' for every status. |
+| `get_task` | all turns | Get full detail for a single task by id. |
+| `add_shopping` | all turns | Add an item to the shopping list, with optional task_id link. |
+| `list_shopping` | all turns | Return the full shopping list (id and item name). |
+| `remove_shopping` | all turns | Remove a shopping item by id. |
+| `log_symptom` | all turns | Record a symptom. `occurred_at` defaults to now; `severity` is 1–10. |
+| `update_symptom` | all turns | Correct or annotate a logged symptom. |
+| `list_symptoms` | all turns | List symptoms, most recent first. Filter by name (substring) or `since` (ISO-8601 bound). Default limit 100. |
+| `get_symptom` | all turns | Full detail for one symptom log by id. |
+| `delete_symptom` | all turns | Delete a symptom log (use when logged in error). |
+| `query` | all turns | Run an arbitrary read-only query (`SELECT` / `WITH … SELECT`) against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
 
-`set_context_bound` is intentionally excluded from the main turn tool list — it is a reflection-step concern. `agent.py` filters `mcp.tools` before passing to the main turn API call and re-attaches `cache_control` to the new last tool.
+`set_context_bound` is in `agent._RESTRICTED_TOOLS`: hidden from every turn unless the job lists it in `Job.extra_tools` (only `trim_context` does). `agent.py` filters `mcp.tools` and re-attaches `cache_control` to the new last tool. It takes a turn count rather than an event id because Claude never sees event ids in its history.
 
 The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom, severity, occurred_at, notes, logged_at)`, `events`, and `mutation_log`.
 
@@ -171,35 +171,25 @@ The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom,
 
 ## Agent Flow
 
-`run_loop(client, mcp, user_message)` → `TurnResult(reply, proactive)`. `client` is an `AsyncAnthropic`; every API call is awaited, so the event loop is never blocked while waiting on Claude.
+`run_loop(client, mcp, user_message, turn_id?, job?, local_tools?, extra_tools?)` → `TurnResult(reply)`. `client` is an `AsyncAnthropic`; every API call is awaited, so the event loop is never blocked while waiting on Claude.
 
 1. Generates a fresh `turn_id` (UUID hex).
 2. Writes the `user_message` event.
-3. Calls `_load_from_event_id()` (reads `context_bound` table) to get the projection bound.
+3. Calls `_load_from_event_id()` to get the projection bound: the `context_bound` table, or the root of the 30th most recent turn (`_MAX_TURNS`) if that is later.
 4. Calls `project_messages(from_event_id)` to build the messages list, which now ends with the new user message. Projecting after the write means the new message is rendered from its stored timestamp, byte-identical to how later turns will render it.
-5. Filters `mcp.tools` to exclude `set_context_bound` for the main turn.
+5. Filters `mcp.tools` to exclude restricted tools the turn's job doesn't allow.
 6. Loops (main turn):
    - Calls Claude with the history, system prompt (`cache_control: ephemeral`), filtered tool list, and top-level `cache_control: ephemeral` (automatic caching of the message history). Writes an `api_call` event.
-   - On `end_turn`: writes an `assistant_message` event, then calls `_run_reflection()`.
+   - On `end_turn`: writes an `assistant_message` event.
    - On `tool_use`: calls `_execute_tool_calls()` (below), appends results to messages, loops.
    - On `refusal`: returns a reply saying Claude declined, with the `stop_details` category.
    - On any other stop reason: returns an "Unexpected stop reason" reply.
-7. Returns `TurnResult(reply=final_text, proactive=proactive_text)`.
+7. Returns `TurnResult(reply=final_text)`.
 8. If the loop hits `_MAX_API_CALLS` (15) without finishing, writes an `error` event (`context: "main_turn"`) and returns a short failure reply.
-
-`_run_reflection(client, mcp, turn_id, assistant_message_id)` → `str | None`:
-
-Runs as a mini agent loop after the main turn:
-1. Re-projects messages from the DB (now includes the just-written `assistant_message`) and appends a synthetic `(reflection — <current time>)` user message, which is not stored as an event.
-2. Loops with the full tool list (including `set_context_bound`) and the reflection system prompt (`cache_control: ephemeral`).
-3. On `end_turn`: if final text is `PASS` (case-insensitive), returns `None` without writing an event. Otherwise writes an `assistant_message` event and returns the text.
-4. On `tool_use`: calls `_execute_tool_calls()`, loops.
-5. Capped at `_MAX_API_CALLS` (15); hitting the cap raises, which is handled as below.
-6. Transient API errors (rate limit, connection, timeout) are re-raised. Any other exception is caught, written as an `error` event (parented to `assistant_message_id`), and returns `None`.
 
 `_execute_tool_calls(mcp, turn_id, response, api_call_id)` → `(tool_results, last_tool_result_id)`:
 
-Shared by both loops. For each `tool_use` block, writes a `tool_call` event, calls the tool, and **always** writes a matching `tool_result` event — even if `mcp.call_tool` raises (the exception text becomes the result with `is_error: true`). This guarantees every `tool_use` in the projection has its `tool_result`; the API rejects a history where one is missing.
+For each `tool_use` block, writes a `tool_call` event, calls the tool, and **always** writes a matching `tool_result` event — even if `mcp.call_tool` raises (the exception text becomes the result with `is_error: true`). This guarantees every `tool_use` in the projection has its `tool_result`; the API rejects a history where one is missing.
 
 All events carry correct `parent_event_id` (causality chain). In-memory message list is discarded at turn end; next turn re-projects from the DB.
 
@@ -209,11 +199,11 @@ The core is the master; channels plug into it. `bot/main.py` creates the Anthrop
 
 **One turn at a time:** every turn goes through one `asyncio.Queue` drained by a single worker task. Turns must not overlap: they would interleave events and race on the context bound. A message that arrives mid-turn waits in the queue. (python-telegram-bot's `concurrent_updates` no longer matters for this; the Telegram handler only acks and enqueues.)
 
-**Channel interface:** a channel has a `name` and an async `deliver(text)`. Inbound, it calls `core.submit(text, channel, turn_id=None)`, which queues the turn and returns immediately. The worker runs `run_loop`, then delivers `TurnResult.reply` and, if present, `TurnResult.proactive` to the originating channel. If `run_loop` raises, the channel gets "Something went wrong. Please try again." Exceptions from `run_loop` or `deliver` are logged and never kill the worker.
+**Channel interface:** a channel has a `name` and an async `deliver(text)`. Inbound, it calls `core.submit(text, channel, turn_id=None)`, which queues the turn and returns immediately. The worker runs `run_loop`, then delivers `TurnResult.reply` to the originating channel. If `run_loop` raises, the channel gets "Something went wrong. Please try again." Exceptions from `run_loop` or `deliver` are logged and never kill the worker.
 
 **Shutdown:** `Core.stop()` lets the in-flight turn finish rather than cancelling it — cancelling mid-tool-call would leave a `tool_call` with no `tool_result`. Turns still queued are dropped with a WARNING; their `user_message` events were never written, so history stays consistent (their `telegram_ack` events remain). `main.py` nests the context managers so shutdown runs: stop Telegram polling → stop the core → shut down the Telegram bot (the in-flight turn can still deliver).
 
-**Wake-ups:** `core.submit_wakeup(job)` queues a turn with no inbound message, on the same queue as user turns. `run_loop(..., job=name, local_tools=[...])` writes a `wakeup` root event instead of `user_message`, offers the local tools after the MCP tools, and skips the reflection step. The final reply is written as an `assistant_message` but not delivered. To reach the user, Claude calls `notify_user`, which delivers to `core.primary_channel` (Telegram). A failed wake-up is logged, not sent. `project_messages` renders a wake-up root as a timestamped user message: `(wake-up: <job>)` then the prompt.
+**Wake-ups:** `core.submit_wakeup(job)` queues a turn with no inbound message, on the same queue as user turns. `run_loop(..., job=name, local_tools=[...])` writes a `wakeup` root event instead of `user_message`, offers the local tools after the MCP tools, and unhides the job's `extra_tools`. The final reply is written as an `assistant_message` but not delivered. To reach the user, Claude calls `notify_user`, which delivers to `core.primary_channel` (Telegram). A failed wake-up is logged, not sent. `project_messages` renders a wake-up root as a timestamped user message: `(wake-up: <job>)` then the prompt.
 
 ## Webhooks (`bot/webhooks.py`)
 
@@ -227,6 +217,15 @@ Caddy (`/etc/caddy/Caddyfile`, a copy of `scripts/Caddyfile`) terminates HTTPS f
 | hook | job | cooldown | trigger |
 |---|---|---|---|
 | `arrived-home` | `arrived_home` | 15 min | iPhone Shortcuts personal automation: Arrive at Home → Get Contents of URL |
+
+## Scheduler (`bot/scheduler.py`)
+
+`SCHEDULE` is a list of `Schedule(job, at, weekdays?, should_run?)` in local time (`TIMEZONE`), so times hold across DST changes. The scheduler ticks every 30 s; a job fires when its most recent scheduled time has passed and it hasn't run since. The last run per job is read from `wakeup` events at startup, then tracked in memory. A run missed while the bot was down is caught up if under 2 hours old, else skipped. `should_run` lets a job skip without an API call.
+
+| job | when | does |
+|---|---|---|
+| `weekend_plan` | Sat 09:00 | Suggests a few open tasks for the weekend via `notify_user` |
+| `trim_context` | Mon 03:00, only if there were turns since its last run | Tidies tasks/shopping from the conversation, then trims history with `set_context_bound` |
 
 ## Telegram Channel (`bot/telegram_handler.py`)
 
@@ -245,7 +244,7 @@ Each process configures logging once, at its entry point, with `configure_loggin
 - **Journal vs terminal.** When stderr is the systemd journal (detected by matching `JOURNAL_STREAM` against stderr's device and inode), every line, traceback lines included, is prefixed with a syslog priority (`<3>` error, `<4>` warning, `<6>` info). journald strips the prefix and stores the real level, so `journalctl -p warning` works. No timestamp, since journald adds one. In a terminal, lines carry a timestamp instead.
 - **MCP server.** The MCP SDK passes the server subprocess only an allowlist of environment variables, so `mcp_client` adds `JOURNAL_STREAM` explicitly. The server inherits the bot's stderr. The SDK's own `mcp` logger is set to WARNING; at INFO it logs every request.
 - **`httpx` is set to WARNING.** At INFO it logs every request URL, and Telegram Bot API URLs contain the bot token (`https://api.telegram.org/bot<TOKEN>/...`). Keep it at WARNING or above.
-- **Turn summary.** `run_loop` logs one INFO line when a turn ends, success or not: API call count and token totals (main turn plus reflection), read back from the turn's `api_call` events. Each `error` event in the turn is also logged as a WARNING with its event id. Refusals and unexpected stop reasons are logged as warnings.
+- **Turn summary.** `run_loop` logs one INFO line when a turn ends, success or not: API call count and token totals, read back from the turn's `api_call` events. Each `error` event in the turn is also logged as a WARNING with its event id. Refusals and unexpected stop reasons are logged as warnings.
 
 The events table remains the detailed record of what happened in a turn; the journal is for process-level activity and a quick view of turns.
 
@@ -260,11 +259,11 @@ The events table remains the detailed record of what happened in a turn; the jou
 
 ## State
 
-The events table is the source of truth — a flat, append-only log. There is no "conversation" concept: the only grouping unit is `turn_id`. The projection bound is Claude's working memory, managed by the `set_context_bound` tool during the reflection step.
+The events table is the source of truth — a flat, append-only log. There is no "conversation" concept: the only grouping unit is `turn_id`. The projection bound is Claude's working memory, trimmed weekly by the `trim_context` job via `set_context_bound` and capped at the last 30 turns.
 
 The messages array is projected from events at each turn start and discarded at turn end. In-memory state exists only for the duration of one turn. Tasks, shopping, and symptoms are ordinary tables written by tools; each write is also recorded as `tool_call`/`tool_result` events and in `mutation_log`.
 
-The projection bound lives in the `context_bound` table (default `0`). `_load_from_event_id()` reads it at the start of the main turn and again at the start of the reflection step. Because it is persisted, it survives process restarts.
+The projection bound lives in the `context_bound` table (default `0`). `_load_from_event_id()` reads it at the start of each turn and applies the 30-turn cap (the cap is not written back). Because it is persisted, it survives process restarts.
 
 ## Debug
 
@@ -276,7 +275,6 @@ The projection bound lives in the `context_bound` table (default `0`). `_load_fr
 
 **System prompts are static: nothing time-varying goes in them.** Any byte change to the system prompt invalidates the cache for it and everything after it. The current time reaches Claude through the messages instead:
 - `project_messages()` prefixes every user message with its send time, e.g. `[Monday, October 12, 2026 at 5:03 PM CDT]\n…`, rendered by `format_time()` from the event's stored timestamp. Event timestamps never change, so the projected history is byte-stable.
-- The reflection trigger message carries the current time.
 
 `format_time(dt)` renders in the `TIMEZONE` env var's zone (default `America/Chicago`).
 
@@ -284,11 +282,9 @@ The projection bound lives in the `context_bound` table (default `0`). `_load_fr
 
 Three cache breakpoints per request: the last tool definition, the system prompt, and automatic caching (top-level `cache_control`) on the end of the message history. Within a tool-using turn, each API call reuses the previous call's prefix. Across turns, tools and system reuse the cache if a message arrives within the 5-minute TTL; the message history only reuses it if the context bound hasn't moved.
 
-The main turn and the reflection step don't share cache entries: their tool lists differ (`set_context_bound`) and so do their system prompts. Check `cache_read_input_tokens` / `cache_creation_input_tokens` on `api_call` events to see what caching actually saves.
+The `trim_context` job's tool list differs (it includes `set_context_bound`), so it doesn't share cache entries with other turns; that's fine weekly. When the 30-turn cap advances, the history prefix changes, so the history cache is rebuilt then too. Check `cache_read_input_tokens` / `cache_creation_input_tokens` on `api_call` events to see what caching actually saves.
 
-Two instances in `agent.py`:
-- `_system_prompt` — renders `prompts/system.md`, used as the system block in the main turn (marked `cache_control: ephemeral`).
-- `_reflection_prompt` — renders `prompts/reflection.md`, used as the system block in the reflection step (marked `cache_control: ephemeral`).
+`_system_prompt` in `agent.py` renders `prompts/system.md`, used as the system block for every turn (marked `cache_control: ephemeral`).
 
 ## Config
 
@@ -300,7 +296,7 @@ Configured in `bot/agent.py`:
 - `_MODEL = "claude-sonnet-5-5"`.
 - `_EFFORT = "medium"`, sent as `output_config.effort` on every call. Sonnet 5.5 runs adaptive thinking by default and thinking is billed as output tokens; effort controls how much it thinks. `"low"` is the next lever for cost.
 - `_MAX_TOKENS = 16000`. Thinking counts toward `max_tokens`, so it is sized above the expected reply length.
-- `_MAX_API_CALLS = 15` caps API calls per loop (main turn and reflection each).
+- `_MAX_API_CALLS = 15` caps API calls per turn.
 
 Thinking blocks are kept in the in-memory message list within a turn (`response.content` is appended unchanged) but are not stored in events, so they are not replayed in later turns.
 
@@ -310,4 +306,4 @@ Thinking blocks are kept in the in-memory message list within a turn (`response.
 
 `tests/conftest.py` has an autouse fixture that points `db.connection` at a fresh temporary database for every test, so tests never touch `personal_assistant.db`.
 
-Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` including the reflection step (`tests/test_run_loop.py`, using a fake async client and fake MCP client), and `run_query()` (`tests/test_query.py`).
+Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` (`tests/test_run_loop.py`, using a fake async client and fake MCP client), `run_query()` (`tests/test_query.py`), the scheduler (`tests/test_scheduler.py`) and history trimming (`tests/test_context.py`).

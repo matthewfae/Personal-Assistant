@@ -8,9 +8,28 @@ def get_context_bound() -> int:
 
 
 def set_context_bound(from_event_id: int) -> None:
-    """Persist the context projection bound. Raises ValueError if from_event_id is not in events."""
+    """Persist the context projection bound. 0 means the start of the log.
+
+    Raises ValueError if from_event_id is neither 0 nor in events.
+    """
     with get_db() as conn:
-        exists = conn.execute("SELECT 1 FROM events WHERE id = ?", (from_event_id,)).fetchone()
-        if exists is None:
+        exists = from_event_id == 0 or conn.execute(
+            "SELECT 1 FROM events WHERE id = ?", (from_event_id,)
+        ).fetchone()
+        if not exists:
             raise ValueError(f"Unknown event id: {from_event_id}")
         conn.execute("UPDATE context_bound SET from_event_id = ? WHERE id = 1", (from_event_id,))
+
+
+def turn_root_id(turns_back: int) -> int:
+    """Id of the turns_back-th most recent turn root (user_message or wakeup); 1 is the latest.
+
+    Returns 0 (the start of the log) if there are fewer turns than that.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM events WHERE type IN ('user_message', 'wakeup') "
+            "ORDER BY id DESC LIMIT 1 OFFSET ?",
+            (turns_back - 1,),
+        ).fetchone()
+    return row["id"] if row else 0

@@ -40,7 +40,6 @@ def test_journal_formatter_maps_levels():
 def test_turn_summary_logged(caplog):
     client = FakeClient([
         _response("end_turn", _text("hello")),
-        _response("end_turn", _text("PASS")),
     ])
 
     with caplog.at_level(logging.INFO, logger="agent"):
@@ -48,21 +47,25 @@ def test_turn_summary_logged(caplog):
 
     [summary] = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert summary.startswith("Turn t1 finished in ")
-    # Two API calls (main + reflection) at 10 in / 5 out each, from the fake client.
-    assert "2 API calls, tokens in=20 cache_read=0 cache_write=0 out=10" in summary
+    # One API call at 10 in / 5 out, from the fake client.
+    assert "1 API calls, tokens in=10 cache_read=0 cache_write=0 out=5" in summary
 
 
-def test_turn_summary_warns_on_error_events(caplog):
-    # Reflection fails because the fake client runs out of responses; the
-    # failure is recorded as an error event and surfaced as a WARNING.
-    client = FakeClient([_response("end_turn", _text("hello"))])
+def test_turn_summary_warns_on_error_events(caplog, monkeypatch):
+    # The turn hits the API call cap; that's recorded as an error event and
+    # surfaced as a WARNING.
+    import agent
+    from tests.test_run_loop import _tool_use
+
+    monkeypatch.setattr(agent, "_MAX_API_CALLS", 1)
+    client = FakeClient([_response("tool_use", _tool_use("toolu_1", "list_tasks", {}))])
 
     with caplog.at_level(logging.INFO, logger="agent"):
         asyncio.run(run_loop(client, FakeMCP(), "hi", turn_id="t2"))
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert warnings[0].startswith("Turn t2: reflection error (event id=")
+    assert warnings[0].startswith("Turn t2: main_turn error (event id=")
 
 
 def test_turn_summary_ignores_other_turns(caplog):
@@ -70,7 +73,6 @@ def test_turn_summary_ignores_other_turns(caplog):
         write_event(conn, "other", "error", {"v": 1, "context": "main_turn", "message": "x"})
     client = FakeClient([
         _response("end_turn", _text("hello")),
-        _response("end_turn", _text("PASS")),
     ])
 
     with caplog.at_level(logging.INFO, logger="agent"):

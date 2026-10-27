@@ -63,7 +63,7 @@ class _Turn:
     text: str
     channel: Channel | None  # None for wake-ups
     turn_id: str
-    job: str | None = None
+    job: Job | None = None
 
 
 class Core:
@@ -93,7 +93,7 @@ class Core:
         """Queue a silent wake-up turn for job. Returns the turn_id."""
         if self._stopping:
             raise RuntimeError("Core is stopping; not accepting new turns")
-        turn = _Turn(text=job.prompt, channel=None, turn_id=uuid.uuid4().hex, job=job.name)
+        turn = _Turn(text=job.prompt, channel=None, turn_id=uuid.uuid4().hex, job=job)
         self._queue.put_nowait(turn)
         logger.info("Turn %s: wake-up queued for job %s", turn.turn_id, job.name)
         return turn.turn_id
@@ -153,8 +153,6 @@ class Core:
             return
 
         await self._deliver(turn.channel, result.reply, turn.turn_id)
-        if result.proactive:
-            await self._deliver(turn.channel, result.proactive, turn.turn_id)
 
     async def _process_wakeup(self, turn: _Turn) -> None:
         async def notify_user(tool_input: dict) -> str:
@@ -165,12 +163,13 @@ class Core:
 
         try:
             await run_loop(
-                self._client, self._mcp, turn.text, turn_id=turn.turn_id, job=turn.job,
+                self._client, self._mcp, turn.text, turn_id=turn.turn_id, job=turn.job.name,
                 local_tools=[LocalTool(_NOTIFY_USER_DEFINITION, notify_user)],
+                extra_tools=turn.job.extra_tools,
             )
         except Exception:
             # Silent by design: a failed wake-up is logged, not sent to the user.
-            logger.exception("Turn %s: wake-up %s raised an exception", turn.turn_id, turn.job)
+            logger.exception("Turn %s: wake-up %s raised an exception", turn.turn_id, turn.job.name)
 
     async def _deliver(self, channel: Channel, text: str, turn_id: str) -> None:
         try:

@@ -5,13 +5,15 @@ A job is started by a trigger (today a webhook; later the scheduler) and runs
 as a silent wake-up turn: Claude only reaches the user by calling notify_user.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class Job:
     name: str
     prompt: str
+    # Restricted MCP tools this job may use (see agent._RESTRICTED_TOOLS).
+    extra_tools: frozenset[str] = field(default_factory=frozenset)
 
 
 ARRIVED_HOME = Job(
@@ -33,4 +35,16 @@ WEEKEND_PLAN = Job(
         "notify_user as a short list, a sentence or two each. If there's genuinely "
         "nothing worth suggesting, don't message him."
     ),
+)
+
+TRIM_CONTEXT = Job(
+    name="trim_context",
+    prompt=(
+        "Weekly housekeeping. Read through the conversation history. First, if it "
+        "mentions anything that should be in tasks or the shopping list but isn't "
+        "(a task finished, a new to-do, an item bought), fix that. Then call "
+        "set_context_bound to trim the history: keep the turns that are still "
+        "unresolved or likely to come up again, drop the rest. Don't message Matt."
+    ),
+    extra_tools=frozenset({"set_context_bound"}),
 )

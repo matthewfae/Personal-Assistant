@@ -12,17 +12,21 @@ _CATCH_UP old, and skipped otherwise (a weekend plan at 4 PM isn't useful).
 "Hasn't run since" is read from the job's last `wakeup` event at startup, so a
 restart neither repeats a run nor forgets one. After that it is tracked in
 memory: a submitted job's event is only written when the turn starts.
+
+A schedule can have a should_run check, so a job with nothing to do (e.g.
+trim_context after a quiet week) is skipped without an API call.
 """
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 
 from core import Core
 from db.connection import get_db
-from jobs import WEEKEND_PLAN, Job
+from jobs import TRIM_CONTEXT, WEEKEND_PLAN, Job
 from prompt_builder import TZ
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,7 @@ class Schedule:
     job: Job
     at: time  # local time
     weekdays: frozenset[int] | None = None  # None = every day
+    should_run: Callable[[], bool] | None = None  # None = always
 
     def previous_fire(self, now: datetime) -> datetime:
         """The most recent scheduled time at or before now (aware, local)."""
@@ -52,8 +57,24 @@ class Schedule:
         raise ValueError(f"Schedule for {self.job.name} has no weekdays")
 
 
+def has_turns_since_last_run(job_name: str) -> bool:
+    """True if any turn (message or other wake-up) happened after the job last ran."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM events WHERE type IN ('user_message', 'wakeup') AND id > COALESCE("
+            "  (SELECT MAX(id) FROM events WHERE type = 'wakeup' AND json_extract(payload, '$.job') = ?), 0"
+            ") LIMIT 1",
+            (job_name,),
+        ).fetchone()
+    return row is not None
+
+
 SCHEDULE = [
     Schedule(WEEKEND_PLAN, at=time(9, 0), weekdays=frozenset({SAT})),
+    Schedule(
+        TRIM_CONTEXT, at=time(3, 0), weekdays=frozenset({MON}),
+        should_run=lambda: has_turns_since_last_run(TRIM_CONTEXT.name),
+    ),
 ]
 
 
@@ -85,6 +106,9 @@ class Scheduler:
             self._last_run[s.job.name] = now
             if now - due > _CATCH_UP:
                 logger.info("Scheduler: skipped %s due %s, more than %s ago", s.job.name, due, _CATCH_UP)
+                continue
+            if s.should_run is not None and not s.should_run():
+                logger.info("Scheduler: skipped %s, nothing to do", s.job.name)
                 continue
             self._core.submit_wakeup(s.job)
             fired.append(s.job.name)
