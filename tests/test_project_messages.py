@@ -177,7 +177,7 @@ def _assert_tool_blocks_paired(messages):
 
 
 def test_bound_on_any_event_never_orphans_tool_blocks():
-    # The reflection step can set the bound to any event id, not just a user_message.
+    # The bound can be any event id, not just a user_message (older bounds were set that way).
     ids = _turn_with_tool_round(EventLog())
     for name, event_id in ids.items():
         _assert_tool_blocks_paired(project_messages(from_event_id=event_id))

@@ -89,3 +89,26 @@ def test_last_run_ignores_other_jobs():
     assert last_run("weekend_plan") is None
     _write_wakeup("weekend_plan", _local(2026, 10, 24, 9, 0))
     assert last_run("weekend_plan") == _local(2026, 10, 24, 9, 0)
+
+
+def test_should_run_false_skips_without_submitting():
+    from scheduler import MON
+
+    core = FakeCore()
+    s = Schedule(Job(name="trim_context", prompt="p"), at=time(3, 0),
+                 weekdays=frozenset({MON}), should_run=lambda: False)
+    scheduler = Scheduler(core, [s])
+    assert scheduler.tick(_local(2026, 11, 2, 3, 0)) == []
+    assert core.wakeups == []
+
+
+def test_has_turns_since_last_run():
+    from scheduler import has_turns_since_last_run
+
+    assert not has_turns_since_last_run("trim_context")  # empty log
+    _write_wakeup("arrived_home", _local(2026, 10, 26, 18, 0))
+    assert has_turns_since_last_run("trim_context")  # never trimmed, one turn
+    _write_wakeup("trim_context", _local(2026, 11, 2, 3, 0))
+    assert not has_turns_since_last_run("trim_context")  # nothing since the trim
+    _write_wakeup("arrived_home", _local(2026, 11, 2, 18, 0))
+    assert has_turns_since_last_run("trim_context")

@@ -12,7 +12,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import anthropic
 from anthropic import AsyncAnthropic
 
 import db.context as context_db
@@ -32,18 +31,23 @@ _EFFORT = "medium"
 # Thinking also counts toward max_tokens, so leave room beyond the reply itself.
 _MAX_TOKENS = 16000
 
-# Upper bound on API calls per loop (main turn or reflection), so a model that
+# Upper bound on API calls per turn, so a model that
 # keeps calling tools can't run up unbounded cost.
 _MAX_API_CALLS = 15
 
+# Hard cap on history: a turn never sees more than this many turns, even if the
+# weekly trim_context job hasn't run. The bound only ever moves forward.
+_MAX_TURNS = 30
+
+# MCP tools hidden from turns unless a job asks for them (Job.extra_tools).
+_RESTRICTED_TOOLS = frozenset({"set_context_bound"})
+
 _system_prompt = PromptBuilder("system.md")
-_reflection_prompt = PromptBuilder("reflection.md")
 
 
 @dataclass
 class TurnResult:
     reply: str
-    proactive: str | None
 
 
 @dataclass
@@ -188,8 +192,8 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
 
 
 def _load_from_event_id() -> int:
-    """Return the current context projection bound from the context_bound table."""
-    return context_db.get_context_bound()
+    """Return the projection bound: the stored context bound, capped at _MAX_TURNS turns."""
+    return max(context_db.get_context_bound(), context_db.turn_root_id(_MAX_TURNS))
 
 
 async def _execute_tool_calls(
@@ -245,95 +249,6 @@ async def _execute_tool_calls(
     return tool_results, last_tool_result_id
 
 
-async def _run_reflection(
-    client: AsyncAnthropic,
-    mcp: MCPClient,
-    turn_id: str,
-    assistant_message_id: int,
-) -> str | None:
-    """Run the reflection mini agent loop after a main turn completes.
-
-    May call tools (including set_context_bound) or send a follow-up message.
-    Returns the final assistant text if it is not PASS, otherwise returns None.
-    """
-    try:
-        from_event_id = _load_from_event_id()
-        messages = project_messages(from_event_id)
-        # The projection ends with the assistant_message from the main turn.
-        # The API requires the last message to be a user turn, so append a
-        # synthetic trigger, which also carries the current time. This message
-        # is not written as an event.
-        now = format_time(datetime.now(timezone.utc))
-        messages.append({"role": "user", "content": f"(reflection \u2014 {now})"})
-
-        next_api_call_parent_id: int = assistant_message_id
-
-        for _ in range(_MAX_API_CALLS):
-            response = await client.messages.create(
-                model=_MODEL,
-                max_tokens=_MAX_TOKENS,
-                output_config={"effort": _EFFORT},
-                system=[
-                    {
-                        "type": "text",
-                        "text": _reflection_prompt.build(),
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                tools=mcp.tools,
-                messages=messages,
-                cache_control={"type": "ephemeral"},
-            )
-
-            with get_db() as conn:
-                api_call_id = write_event(
-                    conn, turn_id, "api_call", _api_call_payload(response),
-                    parent_event_id=next_api_call_parent_id,
-                )
-
-            messages.append({"role": "assistant", "content": response.content})
-
-            if response.stop_reason == "end_turn":
-                final_text = next(
-                    (block.text for block in response.content if block.type == "text"),
-                    "",
-                )
-                if final_text.strip().upper() == "PASS":
-                    return None
-                with get_db() as conn:
-                    write_event(
-                        conn, turn_id, "assistant_message",
-                        {"v": 1, "content": final_text},
-                        parent_event_id=api_call_id,
-                    )
-                return final_text
-
-            elif response.stop_reason == "tool_use":
-                tool_results, last_tool_result_id = await _execute_tool_calls(
-                    mcp, turn_id, response, api_call_id,
-                )
-                messages.append({"role": "user", "content": tool_results})
-                if last_tool_result_id is not None:
-                    next_api_call_parent_id = last_tool_result_id
-
-            else:
-                logger.warning("Turn %s: reflection hit unexpected stop reason %r", turn_id, response.stop_reason)
-                return None
-
-        raise RuntimeError(f"Reflection stopped after {_MAX_API_CALLS} API calls without finishing")
-
-    except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APITimeoutError):
-        raise
-    except Exception as e:
-        with get_db() as conn:
-            write_event(
-                conn, turn_id, "error",
-                {"v": 1, "context": "reflection", "message": str(e)},
-                parent_event_id=assistant_message_id,
-            )
-        return None
-
-
 async def run_loop(
     client: AsyncAnthropic,
     mcp: MCPClient,
@@ -341,20 +256,19 @@ async def run_loop(
     turn_id: str | None = None,
     job: str | None = None,
     local_tools: list[LocalTool] | None = None,
+    extra_tools: frozenset[str] = frozenset(),
 ) -> TurnResult:
     """
     Run the agent loop for one turn.
 
     Projects the message history from the events table, appends the new turn
-    root, runs until Claude produces a final text response, then runs the
-    reflection step. Returns a TurnResult with the reply and optional proactive
-    follow-up text.
+    root, and runs until Claude produces a final text response.
 
-    If job is given, this is a wake-up turn: user_message is the job's prompt,
-    the root event is `wakeup` instead of `user_message`, and the reflection
-    step is skipped (a wake-up's reply is not sent anywhere, so there is
-    nothing to follow up on). local_tools are offered to Claude alongside the
-    MCP tools and run in-process (e.g. notify_user for wake-ups).
+    If job is given, this is a wake-up turn: user_message is the job's prompt
+    and the root event is `wakeup` instead of `user_message`. local_tools are
+    offered to Claude alongside the MCP tools and run in-process (e.g.
+    notify_user for wake-ups). extra_tools names restricted MCP tools
+    (_RESTRICTED_TOOLS) this turn may use.
 
     turn_id may be supplied by the caller (e.g. a transport handler that has
     already written a pre-turn event under the same id). If omitted, a fresh
@@ -367,7 +281,7 @@ async def run_loop(
 
     start = time.monotonic()
     try:
-        return await _run_turn(client, mcp, user_message, turn_id, job, local_tools or [])
+        return await _run_turn(client, mcp, user_message, turn_id, job, local_tools or [], extra_tools)
     finally:
         _log_turn_summary(turn_id, time.monotonic() - start)
 
@@ -378,8 +292,7 @@ _TOKEN_FIELDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_inpu
 def _log_turn_summary(turn_id: str, elapsed: float) -> None:
     """Log the turn's API call count and token totals, and a WARNING per error event.
 
-    Reads the turn's events back from the DB, so it covers the reflection step
-    too. Failures here are logged and swallowed; they must not affect the turn.
+    Reads the turn's events back from the DB. Failures here are logged and swallowed; they must not affect the turn.
     """
     try:
         with get_db() as conn:
@@ -420,6 +333,7 @@ async def _run_turn(
     turn_id: str,
     job: str | None,
     local_tools: list[LocalTool],
+    extra_tools: frozenset[str],
 ) -> TurnResult:
     """Body of run_loop; see its docstring."""
     with get_db() as conn:
@@ -445,12 +359,12 @@ async def _run_turn(
     # For subsequent api_calls, parent is the last tool_result written in the previous round.
     next_api_call_parent_id: int = root_id
 
-    # set_context_bound is a reflection-step tool; hide it from the main turn.
+    # Restricted tools (set_context_bound) are hidden unless the job asks for them.
     # Local tools go last. Re-attach cache_control to the new last tool so the
     # whole tool list stays cached.
     main_tools = [
         {k: v for k, v in t.items() if k != "cache_control"}
-        for t in mcp.tools if t["name"] != "set_context_bound"
+        for t in mcp.tools if t["name"] not in _RESTRICTED_TOOLS - extra_tools
     ] + [t.definition for t in local_tools]
     if main_tools:
         main_tools[-1] = {**main_tools[-1], "cache_control": {"type": "ephemeral"}}
@@ -471,7 +385,7 @@ async def _run_turn(
             tools=main_tools,
             messages=messages,
             # Automatic caching: also caches the conversation so far, so later
-            # API calls in the same turn (and the reflection step) reuse it.
+            # API calls in the same turn reuse it.
             cache_control={"type": "ephemeral"},
         )
 
@@ -489,15 +403,12 @@ async def _run_turn(
                 "",
             )
             with get_db() as conn:
-                assistant_message_event_id = write_event(
+                write_event(
                     conn, turn_id, "assistant_message",
                     {"v": 1, "content": final_text},
                     parent_event_id=api_call_id,
                 )
-            if job is not None:
-                return TurnResult(reply=final_text, proactive=None)
-            proactive_text = await _run_reflection(client, mcp, turn_id, assistant_message_event_id)
-            return TurnResult(reply=final_text, proactive=proactive_text)
+            return TurnResult(reply=final_text)
 
         elif response.stop_reason == "tool_use":
             tool_results, last_tool_result_id = await _execute_tool_calls(
@@ -511,11 +422,11 @@ async def _run_turn(
         elif response.stop_reason == "refusal":
             category = response.stop_details.category if response.stop_details else None
             logger.warning("Turn %s: Claude refused (category: %s)", turn_id, category)
-            return TurnResult(reply=f"Claude declined this request (category: {category}).", proactive=None)
+            return TurnResult(reply=f"Claude declined this request (category: {category}).")
 
         else:
             logger.warning("Turn %s: unexpected stop reason %r", turn_id, response.stop_reason)
-            return TurnResult(reply=f"Unexpected stop reason: {response.stop_reason}", proactive=None)
+            return TurnResult(reply=f"Unexpected stop reason: {response.stop_reason}")
 
     message = f"Stopped after {_MAX_API_CALLS} API calls without a final response"
     with get_db() as conn:
@@ -524,7 +435,7 @@ async def _run_turn(
             {"v": 1, "context": "main_turn" if job is None else "wakeup", "message": message},
             parent_event_id=next_api_call_parent_id,
         )
-    return TurnResult(reply=f"{message}. Try rephrasing or breaking the request up.", proactive=None)
+    return TurnResult(reply=f"{message}. Try rephrasing or breaking the request up.")
 
 
 def debug_causality_tree(turn_id: str) -> str:

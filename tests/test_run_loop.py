@@ -60,17 +60,15 @@ def _event_types():
         return [r["type"] for r in conn.execute("SELECT type FROM events ORDER BY id")]
 
 
-def test_end_turn_with_reflection_pass():
+def test_end_turn_is_one_api_call():
     client = FakeClient([
         _response("end_turn", _text("hello")),
-        _response("end_turn", _text("PASS")),
     ])
 
     result = asyncio.run(run_loop(client, FakeMCP(), "hi"))
 
     assert result.reply == "hello"
-    assert result.proactive is None
-    assert _event_types() == ["user_message", "api_call", "assistant_message", "api_call"]
+    assert _event_types() == ["user_message", "api_call", "assistant_message"]
 
 
 def test_tool_use_round_then_reply():
@@ -78,7 +76,6 @@ def test_tool_use_round_then_reply():
     client = FakeClient([
         _response("tool_use", _tool_use("toolu_1", "list_tasks", {"status": "open"})),
         _response("end_turn", _text("You have one task.")),
-        _response("end_turn", _text("PASS")),
     ])
 
     result = asyncio.run(run_loop(client, mcp, "what's on my list?"))
@@ -91,45 +88,32 @@ def test_tool_use_round_then_reply():
     assert tool_result["content"] == "#1 fix vent"
     assert _event_types() == [
         "user_message", "api_call", "tool_call", "tool_result",
-        "api_call", "assistant_message", "api_call",
+        "api_call", "assistant_message",
     ]
 
 
-def test_main_turn_hides_set_context_bound_but_reflection_sees_it():
+def test_set_context_bound_is_hidden_unless_the_job_allows_it():
     client = FakeClient([
         _response("end_turn", _text("hello")),
-        _response("end_turn", _text("PASS")),
+        _response("end_turn", _text("trimmed")),
     ])
 
     asyncio.run(run_loop(client, FakeMCP(), "hi"))
+    asyncio.run(run_loop(client, FakeMCP(), "trim", job="trim_context",
+                         extra_tools=frozenset({"set_context_bound"})))
 
     main_tools = [t["name"] for t in client.requests[0]["tools"]]
-    reflection_tools = [t["name"] for t in client.requests[1]["tools"]]
+    trim_tools = [t["name"] for t in client.requests[1]["tools"]]
     assert "set_context_bound" not in main_tools
-    assert "set_context_bound" in reflection_tools
+    assert "set_context_bound" in trim_tools
     # cache_control moves to the new last tool when set_context_bound is removed.
     assert client.requests[0]["tools"][-1].get("cache_control") == {"type": "ephemeral"}
-
-
-def test_reflection_follow_up_is_returned_and_recorded():
-    client = FakeClient([
-        _response("end_turn", _text("hello")),
-        _response("end_turn", _text("Also: the vent task is overdue.")),
-    ])
-
-    result = asyncio.run(run_loop(client, FakeMCP(), "hi"))
-
-    assert result.proactive == "Also: the vent task is overdue."
-    with get_db() as conn:
-        last = conn.execute("SELECT type, payload FROM events ORDER BY id DESC LIMIT 1").fetchone()
-    assert last["type"] == "assistant_message"
-    assert json.loads(last["payload"])["content"] == "Also: the vent task is overdue."
+    assert sum(1 for t in client.requests[1]["tools"] if "cache_control" in t) == 1
 
 
 def test_prompt_is_cache_friendly():
     client = FakeClient([
         _response("end_turn", _text("hello")),
-        _response("end_turn", _text("PASS")),
     ])
 
     asyncio.run(run_loop(client, FakeMCP(), "hi"))
@@ -143,16 +127,13 @@ def test_prompt_is_cache_friendly():
     assert main["messages"][-1]["content"].endswith("]\nhi")
     # Automatic caching covers the message history.
     assert main["cache_control"] == {"type": "ephemeral"}
-    assert client.requests[1]["cache_control"] == {"type": "ephemeral"}
-    # The reflection trigger carries the current time.
-    assert client.requests[1]["messages"][-1]["content"].startswith("(reflection — ")
 
 
 def test_cache_token_counts_recorded():
     response = _response("end_turn", _text("hello"))
     response.usage.cache_read_input_tokens = 1500
     response.usage.cache_creation_input_tokens = None  # the API may omit it
-    client = FakeClient([response, _response("end_turn", _text("PASS"))])
+    client = FakeClient([response])
 
     asyncio.run(run_loop(client, FakeMCP(), "hi"))
 
@@ -164,7 +145,7 @@ def test_cache_token_counts_recorded():
     assert payload["cache_creation_input_tokens"] == 0
 
 
-def test_wakeup_turn_runs_local_tool_and_skips_reflection():
+def test_wakeup_turn_runs_local_tool():
     from agent import LocalTool, project_messages
 
     sent = []
@@ -185,8 +166,6 @@ def test_wakeup_turn_runs_local_tool_and_skips_reflection():
     assert sent == ["Groceries to put away"]
     assert mcp.calls == []  # handled in-process, not sent to MCP
     assert result.reply == "Notified."
-    assert result.proactive is None
-    # No reflection api_call after the assistant_message.
     assert _event_types() == ["wakeup", "api_call", "tool_call", "tool_result", "api_call", "assistant_message"]
     # notify_user is offered last, carrying the tool-list cache breakpoint.
     tools = client.requests[0]["tools"]
