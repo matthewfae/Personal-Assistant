@@ -42,18 +42,18 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="set_context_bound",
             description=(
-                "Trim the conversation history that future turns see, keeping only the "
-                "most recent keep_turns turns before this one (each message from Matt or "
-                "wake-up starts a turn). Keep anything still unresolved or likely to come "
-                "up again. Always include a brief rationale."
+                "Trim the conversation history that future turns see. Pass the event id "
+                "(the #N labels) of the oldest thing to keep; everything before it is "
+                "dropped. An id in the middle of a turn keeps that whole turn. Keep "
+                "anything still unresolved or likely to come up again. Always include a "
+                "brief rationale."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "keep_turns": {
+                    "from_event_id": {
                         "type": "integer",
-                        "minimum": 0,
-                        "description": "How many turns before this one to keep. 0 drops all of them.",
+                        "description": "Event id of the oldest thing to keep.",
                     },
                     "rationale": {
                         "type": "string",
@@ -61,7 +61,7 @@ async def list_tools() -> list[types.Tool]:
                         "maxLength": 500,
                     },
                 },
-                "required": ["keep_turns", "rationale"],
+                "required": ["from_event_id", "rationale"],
             },
         ),
         types.Tool(
@@ -264,11 +264,12 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 def _dispatch(name: str, arguments: dict) -> str:
     """Route a tool call to the DB layer and format the result as a string."""
     if name == "set_context_bound":
-        keep_turns = max(0, int(arguments["keep_turns"]))
-        # +1: the current turn's own root is the most recent and always stays.
-        from_event_id = context_db.turn_root_id(keep_turns + 1)
+        requested = int(arguments["from_event_id"])
+        from_event_id = context_db.turn_start(requested)
         context_db.set_context_bound(from_event_id)
-        return f"Kept the last {keep_turns} turn(s); context now starts at event id {from_event_id}"
+        if from_event_id != requested:
+            return f"Event {requested} is mid-turn; context now starts at that turn's start, event {from_event_id}"
+        return f"Context now starts at event {from_event_id}"
 
     elif name == "add_task":
         area = arguments["area"].strip()[:256]

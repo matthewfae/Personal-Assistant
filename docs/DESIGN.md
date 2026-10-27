@@ -15,7 +15,7 @@ bot/prompt_builder.py     Loads prompt templates from prompts/; format_time() fo
 tools/server.py           MCP server: tool schemas, routing, result formatting
 db/connection.py          Connection management, schema DDL, init_db()
 db/mutation_log.py        Appends entries to mutation_log within the caller's transaction
-db/context.py             Read/write the context projection bound (context_bound table); turn_root_id()
+db/context.py             Read/write the context projection bound (context_bound table); turn_start(), turn_root_id()
 db/tasks.py               Tasks CRUD
 db/shopping.py            Shopping list CRUD
 db/symptoms.py            Symptom log CRUD
@@ -127,7 +127,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | tool | available in | description |
 |---|---|---|
 | `notify_user` | wake-up turns only | Send the user a message via the primary channel. A `LocalTool` run in-process by the core, not an MCP tool. |
-| `set_context_bound` | `trim_context` job only | Keep only the last `keep_turns` turns before the current one in future projections. Requires a `rationale` field. |
+| `set_context_bound` | `trim_context` job only | Set the oldest event future projections include (`from_event_id`). An id mid-turn is moved back to that turn's root. Requires a `rationale` field. |
 | `add_task` | all turns | Create a new task with area, summary, and optional priority/effort/detail. |
 | `update_task` | all turns | Update fields on an existing task (status, priority, detail, etc.). |
 | `list_tasks` | all turns | List tasks (all columns). Filterable by status, area, or summary text search. Pass status='all' for every status. |
@@ -142,7 +142,7 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `delete_symptom` | all turns | Delete a symptom log (use when logged in error). |
 | `query` | all turns | Run an arbitrary read-only query (`SELECT` / `WITH … SELECT`) against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
 
-`set_context_bound` is in `agent._RESTRICTED_TOOLS`: hidden from every turn unless the job lists it in `Job.extra_tools` (only `trim_context` does). `agent.py` filters `mcp.tools` and re-attaches `cache_control` to the new last tool. It takes a turn count rather than an event id because Claude never sees event ids in its history.
+`set_context_bound` is in `agent._RESTRICTED_TOOLS`: hidden from every turn unless the job lists it in `Job.extra_tools` (only `trim_context` does). `agent.py` filters `mcp.tools` and re-attaches `cache_control` to the new last tool. Only a turn that has it sees event ids: `project_messages(show_ids=True)` labels turn roots (`[#812 · <time>]`), tool results and assistant messages (`[#827] …`). Ordinary turns don't, because Claude tends to copy a label pattern from its own past replies into new ones. The bound always lands on a turn root (`db.context.turn_start`), since cutting between a tool call and its result would make the API reject every later request.
 
 The `query` tool covers all tables: `tasks`, `shopping`, `symptoms (id, symptom, severity, occurred_at, notes, logged_at)`, `events`, and `mutation_log`.
 
