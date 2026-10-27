@@ -1,0 +1,8 @@
+[Unit]
+Description=Telegram alert when the Personal Assistant fails
+
+[Service]
+Type=oneshot
+User=mattfae
+EnvironmentFile=/home/mattfae/Personal-Assistant/.env
+ExecStart=/home/mattfae/Personal-Assistant/scripts/notify-failure.sh

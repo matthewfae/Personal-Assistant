@@ -1,6 +1,12 @@
 [Unit]
 Description=Personal Assistant Telegram Bot
 After=network.target
+# A crash loop (5 failed starts in 10 minutes) makes systemd give up; the unit
+# then enters the failed state and OnFailure= sends a Telegram alert. A single
+# crash is restarted silently.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=personal-assistant-alert.service
 
 [Service]
 Type=simple

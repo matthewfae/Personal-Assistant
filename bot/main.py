@@ -3,7 +3,7 @@ Entry point for the Personal Assistant.
 
 Starts the assistant core (Anthropic client, MCP session, turn queue), then
 plugs in the Telegram channel and, if WEBHOOK_TOKEN is set, the webhook
-listener and the scheduler, and runs until SIGINT/SIGTERM.
+listener, the scheduler and, if HEARTBEAT_URL is set, the heartbeat, and runs until SIGINT/SIGTERM.
 """
 
 import asyncio
@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from core import Core
 from db.connection import init_db
+from heartbeat import Heartbeat
 from log_setup import configure_logging
 from mcp_client import mcp_client
 from scheduler import Scheduler
@@ -56,10 +57,17 @@ async def main() -> None:
 
         scheduler = Scheduler(core).running()
 
+        heartbeat_url = os.environ.get("HEARTBEAT_URL")
+        if heartbeat_url:
+            heartbeat = Heartbeat(core, heartbeat_url).running()
+        else:
+            logger.warning("HEARTBEAT_URL not set; heartbeat disabled")
+            heartbeat = nullcontext()
+
         # Shutdown runs inside-out: stop polling, webhooks and the scheduler so no new turns
         # arrive, then let the core finish its in-flight turn (which still
         # delivers through the bot), then shut the bot down.
-        async with telegram.running(), core.running(), telegram.polling(), webhooks, scheduler:
+        async with telegram.running(), core.running(), telegram.polling(), webhooks, scheduler, heartbeat:
             stop_event = asyncio.Event()
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):

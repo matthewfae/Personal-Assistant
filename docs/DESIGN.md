@@ -7,6 +7,7 @@ bot/core.py               Assistant core: turn queue + single worker that runs t
 bot/telegram_handler.py   Telegram channel adapter: allowlist, ack, submits messages to the core, delivers replies
 bot/jobs.py               Wake-up job definitions (name, prompt, extra tools)
 bot/scheduler.py          Scheduler: starts jobs on a clock (SCHEDULE, local time)
+bot/heartbeat.py          Heartbeat: pings HEARTBEAT_URL every 5 min while the core is healthy
 bot/webhooks.py           Webhook listener (127.0.0.1:8787, behind Caddy): POST /hooks/<name> starts a wake-up job
 bot/main.py               Entry point: owns the Anthropic client and MCP session, starts the core, Telegram, webhooks and the scheduler
 bot/harness.py            Test harness: sends scripted messages through the loop directly (no Telegram)
@@ -308,4 +309,4 @@ Thinking blocks are kept in the in-memory message list within a turn (`response.
 
 `tests/conftest.py` has an autouse fixture that points `db.connection` at a fresh temporary database for every test, so tests never touch `personal_assistant.db`.
 
-Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` (`tests/test_run_loop.py`, using a fake async client and fake MCP client), `run_query()` (`tests/test_query.py`), the core's turn queue (`tests/test_core.py`), webhooks (`tests/test_webhooks.py`), the scheduler (`tests/test_scheduler.py`), history trimming (`tests/test_context.py`) and logging (`tests/test_logging.py`). Not covered: the `db/` CRUD modules and `mcp_client.py`.
+Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` (`tests/test_run_loop.py`, using a fake async client and fake MCP client), `run_query()` (`tests/test_query.py`), the core's turn queue (`tests/test_core.py`), webhooks (`tests/test_webhooks.py`), the scheduler (`tests/test_scheduler.py`), the heartbeat (`tests/test_heartbeat.py`), history trimming (`tests/test_context.py`) and logging (`tests/test_logging.py`). Not covered: the `db/` CRUD modules and `mcp_client.py`.

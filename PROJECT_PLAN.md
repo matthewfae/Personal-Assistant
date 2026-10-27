@@ -216,7 +216,7 @@ Claude should be able to wake on a timer, get a prompt, and pick from a repertoi
 - **Cost:** a wake-up costs about what a turn does (~3¢). Daily ≈ $1/month; hourly ≈ $20/month.
 - **Considered and dropped:** nightly consolidation with a notes/facts table. Matt supplies context himself, and at a few turns per active day weekly trimming is enough.
 
-### Health checks (absorbs Stage 6c) — next
+### Health checks (absorbs Stage 6c)
 
 Wake-ups are now too infrequent (weekly jobs plus arrivals) to serve as a liveness signal on their own. Plan:
 - **Crash:** systemd `OnFailure=` runs a script that messages Matt via the Telegram API directly, independent of the bot.
@@ -230,7 +230,7 @@ Wake-ups are now too infrequent (weekly jobs plus arrivals) to serve as a livene
 **10c.** ✓ Scheduler (`bot/scheduler.py`): schedules defined in code, in local time (`TIMEZONE`), ticking every 30s. A run missed while the bot was down is caught up if under 2 hours old, else skipped; the last run is read from `wakeup` events, so restarts neither repeat nor forget a run. First job: `weekend_plan`, Saturdays 9:00.
 **10c-2.** ✓ Context trimming moved to a weekly `trim_context` job (Mondays 3:00), not nightly: at ~3–5 turns on an active day, history grows slowly enough that daily trimming saves nothing. No notes table: Matt supplies context himself, so the job only tidies tasks/shopping before trimming. Skipped without an API call if there were no turns since the last trim. Only the trim job sees event ids (`#N` labels on its projected history; ordinary turns don't, so Claude can't copy the labels into replies), so its `from_event_id` is no longer a guess. A bound mid-turn snaps back to the turn's start, since the API rejects a tool call split from its result. Hard cap: projections never include more than the last 30 turns (`_MAX_TURNS`).
 **10d.** ✓ Reflection step removed (done with 10c-2). Of 58 reflections, 48 only moved the bound, ~3 did real tidy-up, and 3 of 7 follow-ups corrected confusion caused by the split itself (the main turn couldn't see `set_context_bound`). Now: one API call fewer per message and one shared prompt-cache prefix.
-**10e.** Crash alert (`OnFailure=`) + external heartbeat. *(Next.)*
+**10e.** ✓ Crash alert + external heartbeat. `bot/heartbeat.py` GETs `HEARTBEAT_URL` (healthchecks.io) every 5 minutes, skipping the ping if the core worker isn't running. `OnFailure=` runs `personal-assistant-alert.service` → `scripts/notify-failure.sh`, which messages Matt via the Telegram Bot API. `OnFailure=` only fires once systemd gives up, so the unit sets `StartLimitBurst=5` in `StartLimitIntervalSec=600`: a crash loop alerts, a single crash restarts silently (the heartbeat misses at most one ping).
 **10f.** More jobs, as wanted.
 
 ## Stage 9 (Future) — Security Hardening
@@ -240,7 +240,7 @@ Secret management, DB access patterns, file permissions, rate limiting.
 ## Deferred Work
 
 ### Unit Tests
-66 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, history trimming, `query` and logging (`uv run pytest`). Gaps: the `db/` CRUD layer and `mcp_client.py`.
+70 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query` and logging (`uv run pytest`). Gaps: the `db/` CRUD layer and `mcp_client.py`.
 
 ### Rate Limiting
 Protect against rapid Telegram message bursts exhausting API credits:
