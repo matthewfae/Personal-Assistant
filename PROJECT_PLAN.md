@@ -240,7 +240,7 @@ Secret management, DB access patterns, file permissions, rate limiting.
 ## Deferred Work
 
 ### Unit Tests
-70 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query` and logging (`uv run pytest`). Gaps: the `db/` CRUD layer and `mcp_client.py`.
+87 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query` and logging , the `db/` CRUD layer and the MCP client against the real tools server (`uv run pytest`).
 
 ### Rate Limiting
 Protect against rapid Telegram message bursts exhausting API credits:
