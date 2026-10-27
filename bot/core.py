@@ -98,6 +98,11 @@ class Core:
         logger.info("Turn %s: wake-up queued for job %s", turn.turn_id, job.name)
         return turn.turn_id
 
+    @property
+    def worker_alive(self) -> bool:
+        """True while the worker task is running (read by the heartbeat)."""
+        return self._worker is not None and not self._worker.done()
+
     def start(self) -> None:
         self._worker = asyncio.create_task(self._run_worker(), name="core-worker")
 

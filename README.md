@@ -6,7 +6,7 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Stages 1–8 and 10a–10d are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. A weekly `trim_context` wake-up lets Claude trim that history (`set_context_bound`), and a hard cap keeps it to the last 30 turns. Claude manages tasks, a shopping list, and symptom logs through MCP tools, and can run read-only SQL over any table. Wake-up turns let Claude act without a message: an HTTPS webhook (`https://pa.mattfae.com/hooks/<name>`, behind Caddy) starts a job such as `arrived_home`, an in-process scheduler starts others (`weekend_plan` on Saturday mornings), and Claude messages the user only if it calls `notify_user`. The bot runs as a `systemd` service. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
+Stages 1–8 and 10a–10e are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. A weekly `trim_context` wake-up lets Claude trim that history (`set_context_bound`), and a hard cap keeps it to the last 30 turns. Claude manages tasks, a shopping list, and symptom logs through MCP tools, and can run read-only SQL over any table. Wake-up turns let Claude act without a message: an HTTPS webhook (`https://pa.mattfae.com/hooks/<name>`, behind Caddy) starts a job such as `arrived_home`, an in-process scheduler starts others (`weekend_plan` on Saturday mornings), and Claude messages the user only if it calls `notify_user`. The bot runs as a `systemd` service; a crash loop sends a Telegram alert, and a heartbeat to healthchecks.io catches the droplet or process going silent. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
 
 ## Repository layout
 
@@ -44,7 +44,8 @@ journalctl -u personal-assistant -p warning    # problems only
 
 What lives outside the repo, and how to recreate it on a fresh droplet:
 
-- **systemd:** copy `scripts/personal-assistant.service` to `/etc/systemd/system/`, then `sudo systemctl enable --now personal-assistant`.
+- **systemd:** copy `scripts/personal-assistant.service` and `scripts/personal-assistant-alert.service` to `/etc/systemd/system/`, `sudo systemctl daemon-reload`, then `sudo systemctl enable --now personal-assistant`. Test the crash alert with `sudo systemctl start personal-assistant-alert`.
+- **Heartbeat:** create a check at healthchecks.io (period 5 min, grace ~10 min) and put its ping URL in `.env` as `HEARTBEAT_URL`.
 - **`.env`:** copy `.env.example`, fill it in, `chmod 600 .env`. Generate `WEBHOOK_TOKEN` with the command in `.env.example`.
 - **DNS:** an A record `pa.mattfae.com` → the droplet's public IP (currently `104.236.236.93`). No AAAA record; the droplet has no IPv6.
 - **Caddy** (HTTPS for the webhooks): install from Caddy's official apt repo (caddyserver.com/docs/install), copy `scripts/Caddyfile` to `/etc/caddy/Caddyfile`, `sudo systemctl reload caddy`. Caddy gets and renews the certificate itself; ports 80 and 443 must be reachable.
