@@ -53,11 +53,14 @@ def _server_env() -> dict[str, str]:
 
     The MCP SDK passes only a short allowlist of variables (HOME, PATH, ...).
     Add JOURNAL_STREAM so the server, whose stderr is inherited from the bot,
-    can tell it is writing to the journal and format its logs to match.
+    can tell it is writing to the journal and format its logs to match. Add
+    DB_PATH so the server uses the bot's database; without it the server falls
+    back to .env, which tests must not do (it names the live database).
     """
     env = get_default_environment()
-    if "JOURNAL_STREAM" in os.environ:
-        env["JOURNAL_STREAM"] = os.environ["JOURNAL_STREAM"]
+    for var in ("JOURNAL_STREAM", "DB_PATH"):
+        if var in os.environ:
+            env[var] = os.environ[var]
     return env
 
 
