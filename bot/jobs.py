@@ -23,3 +23,14 @@ ARRIVED_HOME = Job(
         "tell him briefly with notify_user. If nothing is, don't message him."
     ),
 )
+
+WEEKEND_PLAN = Job(
+    name="weekend_plan",
+    prompt=(
+        "It's Saturday morning. Look at open tasks and the shopping list, and suggest "
+        "a few things Matt could realistically get done this weekend: favor things that "
+        "are due soon, high priority, or small enough to knock out. Send it with "
+        "notify_user as a short list, a sentence or two each. If there's genuinely "
+        "nothing worth suggesting, don't message him."
+    ),
+)

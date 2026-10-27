@@ -14,12 +14,12 @@ from zoneinfo import ZoneInfo
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-_TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
+TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Chicago"))
 
 
 def format_time(dt: datetime) -> str:
     """Render an aware datetime in the user's timezone, e.g. 'Monday, October 12, 2026 at 5:03 PM CDT'."""
-    return dt.astimezone(_TZ).strftime("%A, %B %-d, %Y at %-I:%M %p %Z")
+    return dt.astimezone(TZ).strftime("%A, %B %-d, %Y at %-I:%M %p %Z")
 
 
 class PromptBuilder:
