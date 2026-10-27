@@ -176,3 +176,20 @@ def test_wakeup_turn_runs_local_tool():
     first = project_messages()[0]
     assert first["role"] == "user"
     assert first["content"].endswith("]\n(wake-up: arrived_home)\nMatt got home.")
+
+
+def test_only_a_turn_that_can_trim_sees_event_ids():
+    client = FakeClient([
+        _response("end_turn", _text("hello")),
+        _response("end_turn", _text("trimmed")),
+    ])
+
+    asyncio.run(run_loop(client, FakeMCP(), "hi"))
+    asyncio.run(run_loop(client, FakeMCP(), "trim", job="trim_context",
+                         extra_tools=frozenset({"set_context_bound"})))
+
+    assert client.requests[0]["messages"][-1]["content"].startswith("[")
+    assert not client.requests[0]["messages"][-1]["content"].startswith("[#")
+    assert all(
+        m["content"].startswith("[#") for m in client.requests[1]["messages"]
+    )

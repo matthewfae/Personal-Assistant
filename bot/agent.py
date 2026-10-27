@@ -99,22 +99,30 @@ def render_wakeup(job: str, prompt: str) -> str:
     return f"(wake-up: {job})\n{prompt}"
 
 
-def _timestamped(text: str, timestamp: str) -> str:
-    """Prefix a user message with the time it was sent.
+def _timestamped(text: str, timestamp: str, event_id: int | None = None) -> str:
+    """Prefix a user message with the time it was sent, and its event id if given.
 
     The time comes from the event's stored timestamp, so a message renders
     identically every time it is projected and the cached prefix stays valid.
     """
-    return f"[{format_time(datetime.fromisoformat(timestamp))}]\n{text}"
+    when = format_time(datetime.fromisoformat(timestamp))
+    return f"[#{event_id} · {when}]\n{text}" if event_id is not None else f"[{when}]\n{text}"
 
 
-def project_messages(from_event_id: int = 0) -> list[dict]:
+def project_messages(from_event_id: int = 0, show_ids: bool = False) -> list[dict]:
     """Build the messages array from events at or after from_event_id.
 
     Reconstructs the full interleaved sequence: turn roots (user messages and
     wake-ups), tool use/result pairs (grouped by api_call), and final assistant
     messages. Each turn root is prefixed with its time (see _timestamped).
+
+    show_ids labels turn roots, tool results and assistant messages with their
+    event ids, for the trim_context job, which picks a bound by id. Other turns
+    don't see ids: Claude tends to copy a label pattern from its own past replies.
     """
+    def label(event_id: int, text: str) -> str:
+        return f"[#{event_id}] {text}" if show_ids else text
+
     with get_db() as conn:
         rows = conn.execute(
             """
@@ -147,11 +155,13 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
         payload = json.loads(row["payload"])
 
         if etype == "user_message":
-            messages.append({"role": "user", "content": _timestamped(payload["content"], row["timestamp"])})
+            messages.append({"role": "user", "content": _timestamped(
+                payload["content"], row["timestamp"], row["id"] if show_ids else None)})
 
         elif etype == "wakeup":
             text = render_wakeup(payload["job"], payload["prompt"])
-            messages.append({"role": "user", "content": _timestamped(text, row["timestamp"])})
+            messages.append({"role": "user", "content": _timestamped(
+                text, row["timestamp"], row["id"] if show_ids else None)})
 
         elif etype == "api_call":
             tool_calls = tool_calls_by_api.get(row["id"], [])
@@ -175,7 +185,7 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
                 {
                     "type": "tool_result",
                     "tool_use_id": json.loads(tr["payload"])["tool_use_id"],
-                    "content": json.loads(tr["payload"])["content"],
+                    "content": label(tr["id"], json.loads(tr["payload"])["content"]),
                     # Older events predate is_error; treat as success.
                     "is_error": json.loads(tr["payload"]).get("is_error", False),
                 }
@@ -186,7 +196,7 @@ def project_messages(from_event_id: int = 0) -> list[dict]:
 
         elif etype == "assistant_message":
             if payload["content"]:
-                messages.append({"role": "assistant", "content": payload["content"]})
+                messages.append({"role": "assistant", "content": label(row["id"], payload["content"])})
 
     return messages
 
@@ -353,7 +363,8 @@ async def _run_turn(
     # Project after writing the root, so it is rendered from its stored
     # timestamp exactly as later turns will render it.
     from_event_id = _load_from_event_id()
-    messages = project_messages(from_event_id)
+    # Whoever may trim the history sees event ids, so it can name a bound.
+    messages = project_messages(from_event_id, show_ids="set_context_bound" in extra_tools)
 
     # For the first api_call, parent is the turn root.
     # For subsequent api_calls, parent is the last tool_result written in the previous round.

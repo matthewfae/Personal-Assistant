@@ -44,7 +44,9 @@ TRIM_CONTEXT = Job(
         "mentions anything that should be in tasks or the shopping list but isn't "
         "(a task finished, a new to-do, an item bought), fix that. Then call "
         "set_context_bound to trim the history: keep the turns that are still "
-        "unresolved or likely to come up again, drop the rest. Don't message Matt."
+        "unresolved or likely to come up again, drop the rest. Messages are "
+        "labelled with event ids (#N) in this turn only, so you can name the bound. "
+        "Don't message Matt."
     ),
     extra_tools=frozenset({"set_context_bound"}),
 )
