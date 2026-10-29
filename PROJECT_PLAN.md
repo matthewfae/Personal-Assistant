@@ -240,7 +240,10 @@ Secret management, DB access patterns, file permissions, rate limiting.
 ## Deferred Work
 
 ### Unit Tests
-87 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query` and logging , the `db/` CRUD layer and the MCP client against the real tools server (`uv run pytest`).
+87 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query`, logging, the `db/` CRUD layer and the MCP client against the real tools server (`uv run pytest`).
+
+### Backups (considered, skipped 2026-10-29)
+No backups of `personal_assistant.db`, on purpose: losing the data would be acceptable, and every option adds an inconvenience (nightly file, new account) or a privacy cost (health data stored off the box). Cheapest if wanted later: a nightly `sqlite3 .backup` (not a plain copy, since the DB uses WAL), sent to Matt via Telegram `sendDocument`, optionally encrypted, with a healthchecks.io check.
 
 ### Rate Limiting
 Protect against rapid Telegram message bursts exhausting API credits:
