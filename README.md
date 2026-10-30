@@ -6,13 +6,14 @@ Not designed for external use or deployment — this is a personal project runni
 
 ## Status
 
-Stages 1–8 and 10a–10e are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. A weekly `trim_context` wake-up lets Claude trim that history (`set_context_bound`), and a hard cap keeps it to the last 30 turns. Claude manages tasks, a shopping list, and symptom logs through MCP tools, and can run read-only SQL over any table. Wake-up turns let Claude act without a message: an HTTPS webhook (`https://pa.mattfae.com/hooks/<name>`, behind Caddy) starts a job such as `arrived_home`, an in-process scheduler starts others (`weekend_plan` on Saturday mornings), and Claude messages the user only if it calls `notify_user`. The bot runs as a `systemd` service; a crash loop sends a Telegram alert, and a heartbeat to healthchecks.io catches the droplet or process going silent. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
+Stages 1–8 and 10a–10e are complete. The agent loop records every API call, tool call, and message as an immutable event row. Conversation history is projected from the events table at the start of each turn. A weekly `trim_context` wake-up lets Claude trim that history (`set_context_bound`), and a hard cap keeps it to the last 30 turns. Claude manages tasks, a shopping list, symptom logs and Matt's iCloud calendar (events and alert reminders) through MCP tools, and can run read-only SQL over any table. Wake-up turns let Claude act without a message: an HTTPS webhook (`https://pa.mattfae.com/hooks/<name>`, behind Caddy) starts a job such as `arrived_home`, an in-process scheduler starts others (`weekend_plan` on Saturday mornings), and Claude messages the user only if it calls `notify_user`. The bot runs as a `systemd` service; a crash loop sends a Telegram alert, and a heartbeat to healthchecks.io catches the droplet or process going silent. See `PROJECT_PLAN.md` for the stage breakdown and current TODOs.
 
 ## Repository layout
 
 ```
 bot/         Entry point, assistant core, agent loop, Telegram channel, webhooks, scheduler, jobs, MCP client
 tools/       MCP server (tool schemas and dispatch)
+integrations/ External services (iCloud calendar over CalDAV)
 db/          SQLite access layer (connection, schema, tables, mutation log)
 prompts/     System prompt template
 docs/        Implementation-level design docs
@@ -54,7 +55,7 @@ What lives outside the repo, and how to recreate it on a fresh droplet:
 ## Stack
 
 - Python 3.11+, managed with `uv`
-- `anthropic`, `mcp`, `python-telegram-bot`, `aiohttp` (webhook listener), `python-dotenv`
+- `anthropic`, `mcp`, `python-telegram-bot`, `aiohttp` (webhook listener), `python-dotenv`, `caldav` (iCloud calendar)
 - `sqlite3` from stdlib
 - Caddy on the host, for HTTPS in front of the webhooks
 - Target model: configured in `bot/agent.py`
