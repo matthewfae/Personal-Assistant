@@ -21,6 +21,7 @@ db/tasks.py               Tasks CRUD
 db/shopping.py            Shopping list CRUD
 db/symptoms.py            Symptom log CRUD
 db/query.py               Read-only ad-hoc SQL for the query tool
+integrations/icloud_calendar.py  iCloud calendar over CalDAV: list, add and delete events (local time)
 prompts/system.md         Main turn system prompt (static)
 ```
 
@@ -35,6 +36,8 @@ tools/server.py       ← MCP boundary: tool schemas, dispatch, string formattin
     │
 db/context.py, db/tasks.py, db/shopping.py, db/symptoms.py, db/query.py
                       ← Table-level data access
+integrations/icloud_calendar.py
+                      ← External services (same contract: plain dicts, no MCP)
     │
 db/connection.py      ← Connection management, schema DDL
 db/mutation_log.py    ← Audit writer (called within the same transaction as each write)
@@ -143,6 +146,9 @@ Timestamps are ISO-8601 UTC strings. Event payloads are JSON blobs, always `{"v"
 | `list_symptoms` | all turns | List symptoms, most recent first. Filter by name (substring) or `since` (ISO-8601 bound). Default limit 100. |
 | `get_symptom` | all turns | Full detail for one symptom log by id. |
 | `delete_symptom` | all turns | Delete a symptom log (use when logged in error). |
+| `list_events` | all turns | iCloud calendar events in a local date range (default: today + 7 days), all calendars or one, recurring events expanded. |
+| `add_event` | all turns | Add an event (timed `YYYY-MM-DDTHH:MM` or all-day `YYYY-MM-DD`), optionally with an alert, which is how reminders reach the phone. Default calendar: `ICLOUD_DEFAULT_CALENDAR` (Home). |
+| `delete_event` | all turns | Delete a one-off event by uid. Recurring events are refused, since CalDAV would delete the whole series. |
 | `query` | all turns | Run an arbitrary read-only query (`SELECT` / `WITH … SELECT`) against any table (tasks, shopping, symptoms, events). Returns up to 200 rows. |
 
 `set_context_bound` is in `agent._RESTRICTED_TOOLS`: hidden from every turn unless the job lists it in `Job.extra_tools` (only `trim_context` does). `agent.py` filters `mcp.tools` and re-attaches `cache_control` to the new last tool. Only a turn that has it sees event ids: `project_messages(show_ids=True)` labels turn roots (`[#812 · <time>]`), tool results and assistant messages (`[#827] …`). Ordinary turns don't, because Claude tends to copy a label pattern from its own past replies into new ones. The bound always lands on a turn root (`db.context.turn_start`), since cutting between a tool call and its result would make the API reject every later request.
@@ -291,7 +297,7 @@ The `trim_context` job's tool list differs (it includes `set_context_bound`), so
 
 ## Config
 
-`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`, and optionally `WEBHOOK_TOKEN` and `TIMEZONE`. All are consumed.
+`.env` declares `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `DB_PATH`, and optionally `WEBHOOK_TOKEN`, `HEARTBEAT_URL`, `TIMEZONE` and the iCloud calendar settings (`ICLOUD_USERNAME`, `ICLOUD_APP_PASSWORD`, `ICLOUD_DEFAULT_CALENDAR`). The tools server reads `.env` itself (the MCP SDK passes it only a short env allowlist plus `DB_PATH`). All are consumed.
 
 ## Model
 
@@ -309,4 +315,4 @@ Thinking blocks are kept in the in-memory message list within a turn (`response.
 
 `tests/conftest.py` has an autouse fixture that points `db.connection` at a fresh temporary database for every test, so tests never touch `personal_assistant.db`.
 
-Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` (`tests/test_run_loop.py`, using a fake async client and fake MCP client), `run_query()` (`tests/test_query.py`), the core's turn queue (`tests/test_core.py`), webhooks (`tests/test_webhooks.py`), the scheduler (`tests/test_scheduler.py`), the heartbeat (`tests/test_heartbeat.py`), history trimming (`tests/test_context.py`), logging (`tests/test_logging.py`), the `db/` CRUD modules (`tests/test_db.py`) and the MCP client, run against the real tools server subprocess on the test database (`tests/test_mcp_client.py`).
+Covered so far: `project_messages()` (`tests/test_project_messages.py`), `split_message()` (`tests/test_split_message.py`), `run_loop()` (`tests/test_run_loop.py`, using a fake async client and fake MCP client), `run_query()` (`tests/test_query.py`), the core's turn queue (`tests/test_core.py`), webhooks (`tests/test_webhooks.py`), the scheduler (`tests/test_scheduler.py`), the heartbeat (`tests/test_heartbeat.py`), history trimming (`tests/test_context.py`), logging (`tests/test_logging.py`), the calendar layer's parsing and formatting (`tests/test_icloud_calendar.py`; CalDAV calls themselves are untested), the `db/` CRUD modules (`tests/test_db.py`) and the MCP client, run against the real tools server subprocess on the test database (`tests/test_mcp_client.py`).

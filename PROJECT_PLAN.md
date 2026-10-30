@@ -233,6 +233,10 @@ Wake-ups are now too infrequent (weekly jobs plus arrivals) to serve as a livene
 **10e.** ✓ Crash alert + external heartbeat. `bot/heartbeat.py` GETs `HEARTBEAT_URL` (healthchecks.io) every 5 minutes, skipping the ping if the core worker isn't running. `OnFailure=` runs `personal-assistant-alert.service` → `scripts/notify-failure.sh`, which messages Matt via the Telegram Bot API. `OnFailure=` only fires once systemd gives up, so the unit sets `StartLimitBurst=5` in `StartLimitIntervalSec=600`: a crash loop alerts, a single crash restarts silently (the heartbeat misses at most one ping).
 **10f.** More jobs, as wanted.
 
+## Completed: Stage 11 — iCloud Calendar ✓
+
+`list_events` / `add_event` / `delete_event` over CalDAV (`integrations/icloud_calendar.py`), authenticated with an iCloud app-specific password. Apple offers no scoped or read-only API, so the password also opens iCloud mail and contacts; Matt accepted that. Reminders are calendar events with an alert, which iOS shows as notifications; this replaces adding due dates to tasks. `weekend_plan` now plans around the weekend's events. Apple Reminders can't be reached over CalDAV (only the legacy list), so they're out of scope.
+
 ## Stage 9 (Future) — Security Hardening
 
 Secret management, DB access patterns, file permissions, rate limiting.
@@ -240,7 +244,7 @@ Secret management, DB access patterns, file permissions, rate limiting.
 ## Deferred Work
 
 ### Unit Tests
-87 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query`, logging, the `db/` CRUD layer and the MCP client against the real tools server (`uv run pytest`).
+93 tests cover projection, message splitting, the agent loop, the core, webhooks, the scheduler, the heartbeat, history trimming, `query`, logging, the calendar layer's parsing and formatting, the `db/` CRUD layer and the MCP client against the real tools server (`uv run pytest`).
 
 ### Backups (considered, skipped 2026-10-29)
 No backups of `personal_assistant.db`, on purpose: losing the data would be acceptable, and every option adds an inconvenience (nightly file, new account) or a privacy cost (health data stored off the box). Cheapest if wanted later: a nightly `sqlite3 .backup` (not a plain copy, since the DB uses WAL), sent to Matt via Telegram `sendDocument`, optionally encrypted, with a healthchecks.io check.

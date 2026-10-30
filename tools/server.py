@@ -13,6 +13,7 @@ This module is the boundary between MCP and the DB layer:
 import asyncio
 import logging
 import sys
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # Ensure the project root is on sys.path so that the db/ package is importable
@@ -30,6 +31,7 @@ import db.tasks as tasks_db
 import db.shopping as shopping_db
 import db.query as query_db
 import db.symptoms as symptoms_db
+import integrations.icloud_calendar as calendar_api
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +250,56 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["symptom_id"],
             },
         ),
+        types.Tool(
+            name="list_events",
+            description=(
+                "List Matt's iCloud calendar events (all calendars unless one is named), "
+                "recurring events expanded. Dates are local, YYYY-MM-DD; the range is "
+                "start inclusive, end exclusive. Defaults: today through 7 days out."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start": {"type": "string", "description": "First day, YYYY-MM-DD"},
+                    "end": {"type": "string", "description": "Day after the last day, YYYY-MM-DD"},
+                    "calendar": {"type": "string", "description": "Calendar name, e.g. Home or Work"},
+                },
+            },
+        ),
+        types.Tool(
+            name="add_event",
+            description=(
+                "Add an event to Matt's iCloud calendar; it syncs to his iPhone. Times are "
+                "local: YYYY-MM-DDTHH:MM for a timed event, YYYY-MM-DD for all day. An alert "
+                "becomes a phone notification, so use one when the event is a reminder. "
+                "Defaults: the Home calendar, 1 hour (or 1 day if all day), no alert."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "maxLength": 256},
+                    "start": {"type": "string", "description": "YYYY-MM-DDTHH:MM, or YYYY-MM-DD for all day"},
+                    "end": {"type": "string", "description": "Same format as start"},
+                    "calendar": {"type": "string", "description": "Calendar name, e.g. Home or Work"},
+                    "alert_minutes": {"type": "integer", "description": "Minutes before start to alert (0 = at start)"},
+                    "location": {"type": "string", "maxLength": 256},
+                    "notes": {"type": "string", "maxLength": 2000},
+                },
+                "required": ["title", "start"],
+            },
+        ),
+        types.Tool(
+            name="delete_event",
+            description=(
+                "Delete a one-off calendar event by its uid (from list_events or add_event). "
+                "Recurring events can't be deleted here."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"uid": {"type": "string"}},
+                "required": ["uid"],
+            },
+        ),
     ]
 
 
@@ -454,7 +506,63 @@ def _dispatch(name: str, arguments: dict) -> str:
             return "Symptom log deleted."
         return "Symptom log not found."
 
+    elif name == "list_events":
+        today = datetime.now(calendar_api.TZ).date()
+        try:
+            start = date.fromisoformat(arguments["start"]) if "start" in arguments else today
+            end = date.fromisoformat(arguments["end"]) if "end" in arguments else start + timedelta(days=7)
+            events = calendar_api.list_events(start, end, arguments.get("calendar"))
+        except (ValueError, calendar_api.NotConfigured) as e:
+            return f"Error: {e}"
+        if not events:
+            return f"No events from {start} to {end} (end exclusive)."
+        return "\n".join(format_event(e) for e in events)
+
+    elif name == "add_event":
+        try:
+            start = calendar_api.parse_when(arguments["start"])
+            end = calendar_api.parse_when(arguments["end"]) if "end" in arguments else None
+            event = calendar_api.add_event(
+                arguments["title"].strip()[:256], start, end,
+                calendar=arguments.get("calendar"),
+                alert_minutes=arguments.get("alert_minutes"),
+                location=arguments.get("location"),
+                notes=arguments.get("notes"),
+            )
+        except (ValueError, calendar_api.NotConfigured) as e:
+            return f"Error: {e}"
+        alert = f" (alert {arguments['alert_minutes']} min before)" if "alert_minutes" in arguments else ""
+        return f"Added: {format_event(event)}{alert}"
+
+    elif name == "delete_event":
+        try:
+            event = calendar_api.delete_event(arguments["uid"])
+        except (ValueError, calendar_api.NotConfigured) as e:
+            return f"Error: {e}"
+        if event is None:
+            return "Event not found."
+        return f"Deleted: {format_event(event)}"
+
     raise ValueError(f"Unknown tool: {name}")
+
+
+def format_event(e: dict) -> str:
+    """One line per event, e.g. 'Sat Nov 7, 10:00 AM–11:00 AM | Fix mirror | Home | uid=...'."""
+    start, end = e["start"], e["end"]
+    if e["all_day"]:
+        last = end - timedelta(days=1)
+        when = f"{start:%a %b %-d}" + (f"–{last:%a %b %-d}" if last > start else "") + ", all day"
+    elif start.date() == end.date():
+        when = f"{start:%a %b %-d, %-I:%M %p}–{end:%-I:%M %p}"
+    else:
+        when = f"{start:%a %b %-d, %-I:%M %p} – {end:%a %b %-d, %-I:%M %p}"
+    parts = [when, e["title"], e["calendar"]]
+    if e["location"]:
+        parts.append(e["location"])
+    if e["recurring"]:
+        parts.append("recurring")
+    parts.append(f"uid={e['uid']}")
+    return " | ".join(parts)
 
 
 async def main():
